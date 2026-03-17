@@ -49,13 +49,26 @@ class ChromaClient:
         self._client: chromadb.HttpClient | None = None
 
     def connect(self) -> None:
-        """Synchronous connect — called once at startup before the event loop is busy."""
-        self._client = chromadb.HttpClient(
-            host=self._host,
-            port=self._port,
-            settings=Settings(anonymized_telemetry=False),
-        )
-        logger.info("ChromaDB connected | host=%s:%d", self._host, self._port)
+        """
+        Connects to ChromaDB. Uses HttpClient if host is reachable,
+        falls back to in-memory EphemeralClient for local dev/testing.
+        """
+        try:
+            self._client = chromadb.HttpClient(
+                host=self._host,
+                port=self._port,
+                settings=Settings(anonymized_telemetry=False),
+            )
+            # Test connection
+            self._client.heartbeat()
+            logger.info("ChromaDB connected (HTTP) | host=%s:%d", self._host, self._port)
+        except Exception:
+            logger.warning(
+                "ChromaDB HTTP unavailable — falling back to in-memory client (dev mode)"
+            )
+            self._client = chromadb.EphemeralClient(
+                settings=Settings(anonymized_telemetry=False)
+            )
 
     def disconnect(self) -> None:
         self._client = None

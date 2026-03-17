@@ -74,6 +74,7 @@ class AuditorNote(BaseModel):
     """
     Per-turn scorecard filled by agents/auditor.py.
     Runs as asyncio.create_task() — never blocks the live loop.
+    Emitted as real-time metadata over WebSocket for frontend heatmap.
     """
     turn_index: int
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -82,6 +83,12 @@ class AuditorNote(BaseModel):
     filler_word_count: int = 0
     red_flags: list[str] = Field(default_factory=list)
     resume_entity_referenced: str = ""
+    # Real-time metadata fields — sent to frontend immediately after scoring
+    hesitation_score: float = Field(
+        default=0.0, ge=0.0, le=1.0,
+        description="0.0=fluent, 1.0=very hesitant. Derived from filler_word_count / word_count"
+    )
+    word_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +110,8 @@ class FeedbackItem(BaseModel):
     """
     One Wellfound category feedback block.
     All 4 fields are mandatory — rules.md §5.
+    is_derived_metric: True = metric pulled from resume power_facts (verified).
+                       False = metric is a suggested placeholder (student must fill in).
     """
     category: Literal[
         "Technical Depth",
@@ -120,6 +129,10 @@ class FeedbackItem(BaseModel):
         description="15-30 sec STAR rewrite with metric and industry terminology"
     )
     mirror: MirrorResult
+    is_derived_metric: bool = Field(
+        default=False,
+        description="True = metric verified from resume power_facts. False = suggested placeholder."
+    )
 
 
 class CoachReport(BaseModel):

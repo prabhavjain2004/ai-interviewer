@@ -25,6 +25,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.orchestrator import initialize_graph
@@ -118,6 +121,15 @@ app.include_router(resume.router)
 app.include_router(session.router)
 app.include_router(report.router)
 app.include_router(ws_router)
+
+# Serve static files
+static_dir = Path("static")
+static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_ui() -> HTMLResponse:
+    return HTMLResponse(Path("templates/index.html").read_text(encoding="utf-8"))
 
 
 @app.get("/health")

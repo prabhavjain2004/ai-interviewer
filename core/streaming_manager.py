@@ -19,12 +19,15 @@ import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import AsyncIterator, Callable
+from typing import TYPE_CHECKING, AsyncIterator, Callable
 
 from google import genai
 from google.genai import types as genai_types
 
 from core.state import ConversationTurn, InterviewState
+
+if TYPE_CHECKING:
+    from services.chroma_client import ChromaClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-FLASH_LIVE_MODEL = "models/gemini-1.5-flash-latest"   # Flash Live — sub-500ms
+FLASH_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"  # Native audio Live — sub-500ms
 
 # Audio format expected by Gemini Live and sent back to browser
 AUDIO_SAMPLE_RATE = 16000
@@ -45,11 +48,17 @@ AUDIO_CHANNELS = 1
 
 def build_system_instruction(resume_json: dict, phase: str) -> str:
     """
-    Injects the student's resume_json into the Flash Live system_instruction.
+    Injects the student's full resume text + structured entities into the Flash Live
+    system_instruction. Raw text gives richer context; structured JSON gives precise anchors.
     Phase-aware tone: warm in warm_up, technically firm in deep_dive/stress_test.
     Entity grounding is enforced here — rules.md §3.
     """
-    resume_str = json.dumps(resume_json, indent=2)
+    # Full raw text for rich context — the interviewer reads the resume like a human would
+    raw_text = resume_json.get("raw_text", "")
+
+    # Structured entities for precise question anchoring
+    structured = {k: v for k, v in resume_json.items() if k != "raw_text"}
+    structured_str = json.dumps(structured, indent=2)
 
     phase_guidance = {
         "warm_up": (
@@ -77,11 +86,15 @@ REQUIRED approach: Ask follow-up questions that guide the student toward the rig
 
 {phase_guidance.get(phase, phase_guidance["warm_up"])}
 
---- STUDENT RESUME (use these entities as Question Anchors) ---
-{resume_str}
---- END RESUME ---
+--- STUDENT RESUME — FULL TEXT (read this like a human interviewer would) ---
+{raw_text}
+--- END FULL TEXT ---
 
-Key resume entities to drill into:
+--- STRUCTURED ENTITIES (use these as precise Question Anchors) ---
+{structured_str}
+--- END STRUCTURED ENTITIES ---
+
+Key anchors to drill into:
 - Projects: {[p.get("name") for p in resume_json.get("projects", [])]}
 - Tech Stack: {resume_json.get("tech_stack", [])}
 - Power Facts: {resume_json.get("power_facts", [])}
@@ -116,6 +129,8 @@ class LiveInterviewer:
         resume_json: dict,
         initial_phase: str = "warm_up",
         on_auditor_trigger: Callable[[str, int], None] | None = None,
+        on_transcript_event: Callable[[str, str], None] | None = None,
+        chroma_client: "ChromaClient | None" = None,
     ) -> None:
         self.session_id = session_id
         self.resume_json = resume_json
@@ -123,15 +138,18 @@ class LiveInterviewer:
         self.turn_count = 0
 
         # Callback fired (non-blocking) when a student transcript chunk arrives
-        # Signature: (student_text: str, turn_index: int) -> None
-        # agents/auditor.py registers here via orchestrator
         self._on_auditor_trigger = on_auditor_trigger
 
-        self._client: genai.Client | None = None
-        self._live_session = None          # google-genai Live session handle
-        self._is_connected = False
+        # Callback fired when any transcript event arrives (interviewer or student)
+        self._on_transcript_event = on_transcript_event
 
-        # Accumulated transcript for this session (ConversationTurn dicts)
+        # ChromaDB client for mid-session RAG (deep_dive + stress_test phases only)
+        self._chroma = chroma_client
+
+        self._client: genai.Client | None = None
+        self._live_session = None
+        self._live_cm = None  # holds the async context manager open
+        self._is_connected = False
         self._transcript: list[dict] = []
 
     # ------------------------------------------------------------------
@@ -151,10 +169,21 @@ class LiveInterviewer:
         config = genai_types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=system_instruction,
-            # VAD enabled — student can barge in naturally (hld.md §2)
+            # Enable transcription for both sides — required for coach report
+            # Without these, input_transcription and model_turn text are never populated
+            input_audio_transcription=genai_types.AudioTranscriptionConfig(),
+            output_audio_transcription=genai_types.AudioTranscriptionConfig(),
+            # Disable thinking — 2.5 models have thinking on by default which
+            # returns text/thought parts instead of audio and breaks the live loop
+            generation_config=genai_types.GenerationConfig(
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            ),
+            # VAD disabled — frontend sends explicit TURN_COMPLETE signal instead.
+            # Native VAD caused 10-15s delays when background noise (fan, AC) kept
+            # RMS above the noise gate threshold, preventing silence detection.
             realtime_input_config=genai_types.RealtimeInputConfig(
                 automatic_activity_detection=genai_types.AutomaticActivityDetection(
-                    disabled=False,
+                    disabled=True,
                 )
             ),
             speech_config=genai_types.SpeechConfig(
@@ -166,23 +195,40 @@ class LiveInterviewer:
             ),
         )
 
-        self._live_session = await self._client.aio.live.connect(
+        self._live_cm = self._client.aio.live.connect(
             model=FLASH_LIVE_MODEL,
             config=config,
-        ).__aenter__()
+        )
+        self._live_session = await self._live_cm.__aenter__()
 
         self._is_connected = True
         logger.info("Flash Live session opened | session_id=%s | phase=%s",
                     self.session_id, self.phase)
 
+        # Kick off the opening greeting — send a text prompt so the AI speaks first.
+        # Without this, Gemini Live waits silently for the student to speak first.
+        await self._live_session.send_client_content(
+            turns=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=(
+                    "Please start the interview now. "
+                    "Greet the student warmly and ask your first warm-up question."
+                ))],
+            ),
+            turn_complete=True,
+        )
+        logger.info("Opening greeting triggered | session_id=%s", self.session_id)
+
     async def close(self) -> None:
         """Graceful shutdown. Caller is responsible for persisting state to Redis."""
-        if self._live_session and self._is_connected:
+        if self._live_cm and self._is_connected:
             try:
-                await self._live_session.__aexit__(None, None, None)
+                await self._live_cm.__aexit__(None, None, None)
             except Exception:
                 pass  # Best-effort close
         self._is_connected = False
+        self._live_session = None
+        self._live_cm = None
         logger.info("Flash Live session closed | session_id=%s", self.session_id)
 
     # ------------------------------------------------------------------
@@ -192,20 +238,40 @@ class LiveInterviewer:
     async def send_audio(self, pcm_bytes: bytes) -> None:
         """
         Push raw PCM audio bytes from the browser mic into Flash Live.
-        Called by api/websocket.py on every incoming WebSocket message.
+        Uses send_realtime_input — the correct SDK method for streaming audio.
         No audio is stored — bytes are forwarded directly (rules.md §6).
         """
         if not self._is_connected or self._live_session is None:
             return
-        await self._live_session.send(
-            input=genai_types.LiveClientRealtimeInput(
-                media_chunks=[
-                    genai_types.Blob(
-                        data=pcm_bytes,
-                        mime_type=f"audio/pcm;rate={AUDIO_SAMPLE_RATE}",
-                    )
-                ]
+        await self._live_session.send_realtime_input(
+            audio=genai_types.Blob(
+                data=pcm_bytes,
+                mime_type=f"audio/pcm;rate={AUDIO_SAMPLE_RATE}",
             )
+        )
+
+    async def signal_activity_start(self) -> None:
+        """
+        Signals to Gemini Live that the student has started speaking.
+        Must be sent before audio when VAD is disabled (manual mode).
+        send_realtime_input only accepts one argument per call.
+        """
+        if not self._is_connected or self._live_session is None:
+            return
+        await self._live_session.send_realtime_input(
+            activity_start=genai_types.ActivityStart()
+        )
+
+    async def signal_activity_end(self) -> None:
+        """
+        Signals to Gemini Live that the student has finished speaking.
+        Called when the frontend sends TURN_COMPLETE (VAD disabled — manual mode).
+        send_realtime_input only accepts one argument per call.
+        """
+        if not self._is_connected or self._live_session is None:
+            return
+        await self._live_session.send_realtime_input(
+            activity_end=genai_types.ActivityEnd()
         )
 
     async def stream_response(self) -> AsyncIterator[bytes]:
@@ -214,36 +280,62 @@ class LiveInterviewer:
         Also captures transcript text when available and fires the Auditor.
 
         Yields: raw PCM audio bytes (forward directly to browser WebSocket).
+
+        Runs as a persistent loop — re-enters receive() after each turn so the
+        session stays alive between AI speaking and student responding.
+        Only exits when the session is explicitly closed.
         """
         if not self._live_session:
             return
 
-        async for response in self._live_session.receive():
-            # --- Audio chunk: yield immediately to browser (sub-500ms path) ---
-            if response.data:
-                yield response.data
+        while self._is_connected:
+            try:
+                async for response in self._live_session.receive():
+                    # --- Audio chunk: yield immediately to browser ---
+                    if response.data:
+                        yield response.data
 
-            # --- Transcript event: fire Auditor as non-blocking task ---
-            if response.server_content:
-                content = response.server_content
+                    # --- Transcript + metadata events ---
+                    if response.server_content:
+                        content = response.server_content
 
-                # Capture model (interviewer) turn text
-                if content.model_turn and content.model_turn.parts:
-                    for part in content.model_turn.parts:
-                        if hasattr(part, "text") and part.text:
-                            self._append_turn("interviewer", part.text)
+                        if content.model_turn and content.model_turn.parts:
+                            for part in content.model_turn.parts:
+                                if hasattr(part, "text") and part.text:
+                                    # model_turn text parts are thinking/metadata — skip,
+                                    # use output_transcription for the actual spoken words
+                                    pass
 
-                # Capture input (student) transcript when Flash Live returns it
-                if content.input_transcription:
-                    student_text = content.input_transcription.text
-                    if student_text.strip():
-                        self._append_turn("student", student_text)
-                        # Fire Auditor — non-blocking, never awaited here (rules.md §4)
-                        self._fire_auditor(student_text, self.turn_count)
+                        # AI spoken words via output transcription
+                        if content.output_transcription and content.output_transcription.text:
+                            text = content.output_transcription.text.strip()
+                            if text and content.output_transcription.finished:
+                                self._append_turn("interviewer", text)
+                                if self._on_transcript_event:
+                                    self._on_transcript_event("interviewer", text)
 
-                # Turn complete signal — increment turn counter
-                if content.turn_complete:
-                    self.turn_count += 1
+                        if content.input_transcription:
+                            student_text = content.input_transcription.text
+                            if student_text and student_text.strip():
+                                self._append_turn("student", student_text)
+                                if self._on_transcript_event:
+                                    self._on_transcript_event("student", student_text)
+                                self._fire_auditor(student_text, self.turn_count)
+                                if self.phase in ("deep_dive", "stress_test") and self._chroma:
+                                    asyncio.create_task(
+                                        self._inject_rag_context(student_text),
+                                        name=f"rag-{self.session_id}-turn-{self.turn_count}",
+                                    )
+
+                        if content.turn_complete:
+                            self.turn_count += 1
+
+            except Exception as exc:
+                # Session closed or network error — exit the loop cleanly
+                if self._is_connected:
+                    logger.warning("stream_response loop error | session=%s | error=%s",
+                                   self.session_id, exc)
+                break
 
     # ------------------------------------------------------------------
     # Phase update (called by orchestrator when LangGraph transitions phase)
@@ -252,16 +344,22 @@ class LiveInterviewer:
     async def update_phase(self, new_phase: str) -> None:
         """
         Re-injects system_instruction when the interview phase changes.
-        Flash Live supports mid-session instruction updates.
+        Sends a silent context update via send_client_content.
         """
         if not self._is_connected or self._live_session is None:
             return
         self.phase = new_phase
         new_instruction = build_system_instruction(self.resume_json, new_phase)
-        await self._live_session.send(
-            input=genai_types.LiveClientToolResponse(
-                function_responses=[]
-            )
+        # Inject phase change as a system context note
+        await self._live_session.send_client_content(
+            turns=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=(
+                    f"[SYSTEM: Interview phase is now {new_phase.upper()}. "
+                    f"Adjust your questioning style accordingly.]"
+                ))],
+            ),
+            turn_complete=False,
         )
         logger.info("Phase updated | session_id=%s | new_phase=%s",
                     self.session_id, new_phase)
@@ -289,6 +387,44 @@ class LiveInterviewer:
             _safe_auditor_call(self._on_auditor_trigger, student_text, turn_index),
             name=f"auditor-{self.session_id}-turn-{turn_index}",
         )
+
+    async def _inject_rag_context(self, student_text: str) -> None:
+        """
+        Mid-session RAG: queries ChromaDB for resume chunks relevant to what the
+        student just said, then sends a context update to Flash Live so the next
+        question is grounded in the most relevant resume detail.
+
+        Runs as asyncio.create_task() — never blocks the audio path.
+        Only active in deep_dive and stress_test phases.
+        """
+        if not self._chroma or not self._is_connected or not self._live_session:
+            return
+        try:
+            chunks = await self._chroma.query_resume(
+                self.session_id, student_text, n_results=2
+            )
+            if not chunks:
+                return
+
+            context_update = (
+                "\n[CONTEXT UPDATE — use this for your next question]\n"
+                + "\n".join(f"- {c}" for c in chunks)
+                + "\n[END CONTEXT UPDATE]\n"
+            )
+            # Send as a user-turn text message so Flash Live incorporates it
+            await self._live_session.send_client_content(
+                turns=genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=context_update)],
+                ),
+                turn_complete=False,  # Not a real student turn — just context
+            )
+            logger.debug("RAG context injected | session=%s | chunks=%d",
+                         self.session_id, len(chunks))
+        except Exception as exc:
+            # Never propagate — RAG failure must not affect the interview
+            logger.warning("RAG injection failed | session=%s | error=%s",
+                           self.session_id, exc)
 
     # ------------------------------------------------------------------
     # State export (called by orchestrator before Redis persist)

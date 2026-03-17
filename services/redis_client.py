@@ -33,12 +33,18 @@ class RedisClient:
         self._redis: aioredis.Redis | None = None
 
     async def connect(self) -> None:
-        self._redis = await aioredis.from_url(
-            self._url,
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        logger.info("Redis connected | url=%s", self._url)
+        try:
+            self._redis = await aioredis.from_url(
+                self._url,
+                encoding="utf-8",
+                decode_responses=True,
+            )
+            await self._redis.ping()
+            logger.info("Redis connected | url=%s", self._url)
+        except Exception:
+            logger.warning("Redis unavailable — falling back to fakeredis (dev mode)")
+            import fakeredis.aioredis as fakeredis
+            self._redis = fakeredis.FakeRedis(decode_responses=True)
 
     async def disconnect(self) -> None:
         if self._redis:

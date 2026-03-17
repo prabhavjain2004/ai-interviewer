@@ -2,6 +2,19 @@
 
 ## Project: AI Technical Interviewer & Mentor (Ribbon.ai Killer)
 
+## 2026-03-18 Lead AI Engineer Audit Snapshot
+
+- Objective: Compare implementation against architecture.md, rules.md, structure.md, and hld.md.
+- Scope: Read-only code audit (no code changes), plus maintain this single tracking file.
+- Immediate priority gaps found:
+	- LangGraph is compiled but not truly orchestrating runtime transitions on the hot path.
+	- HLD/architecture says native VAD barge-in is enabled, but code currently runs manual turn signaling with VAD disabled.
+	- Horizontal scaling is constrained by in-process session registry dependency for active websocket sessions.
+	- State contract drifts from strict typed models at graph boundary (dict-heavy state payloads).
+	- Persistence safety risk: Redis outage fallback path depends on fakeredis but dependency is not pinned in requirements.
+
+---
+
 ---
 
 ## STATUS TRACKER
@@ -27,15 +40,15 @@
 | api/websocket.py | DONE | WS audio bridge, concurrent recv/send tasks — built 2026-03-18 |
 | main.py | DONE | FastAPI lifespan, all routers mounted — built 2026-03-18 |
 | requirements.txt | DONE | All dependencies — built 2026-03-18 |
-| .env.example | DONE | Env var template — built 2026-03-18 |
+| templates/index.html | DONE | Basic UI — upload, live interview, transcript, report — built 2026-03-18 |
 
 ---
 
 ## ARCHITECTURE DECISIONS (LOCKED)
 
 ### The Hybrid Model Split
-- Gemini 1.5 Flash Live = interview layer ONLY (sub-500ms, native multimodal, WebSocket)
-- Gemini 1.5 Pro = resume parsing + post-interview coaching ONLY (quality over speed)
+- Gemini 2.5 Flash Native Audio = interview layer ONLY (sub-500ms, native multimodal, WebSocket)
+- Gemini 2.5 Pro = resume parsing + post-interview coaching ONLY (quality over speed)
 - This is a HARD rule from rules.md — never swap these
 
 ### State Design
@@ -99,6 +112,25 @@ main.py                    — FastAPI app, mounts routes, compiles LangGraph gr
 ### 2026-03-18 — Session 1
 - Read original 4 docs, understood base architecture
 - Decided on hybrid Pydantic + TypedDict state approach
+
+### 2026-03-18 — Session 7 (current)
+- BUG FIX: Double coach trigger — added dedup guard in `run_coach_background`: checks if report already exists in Redis before generating. Prevents two concurrent coach tasks from both running.
+- BUG FIX: 10-15s response delay — root cause was native VAD + noise gate. Fan/background noise kept RMS above 0.015 threshold, causing Gemini's VAD to never detect silence. Fix: disabled VAD entirely (`disabled=True`) and switched to manual activity detection.
+- NEW FEATURE: Manual turn signaling — frontend now has "Your Turn" button (sends `ACTIVITY_START`) and "Done Speaking" button (sends `TURN_COMPLETE` → `ACTIVITY_END`). User has explicit control over when their turn starts and ends. No more waiting for silence detection.
+- API: Used `genai_types.ActivityStart()` and `genai_types.ActivityEnd()` in `LiveClientRealtimeInput` — confirmed correct SDK fields for manual VAD mode.
+- Audio send: switched from `media_chunks=[Blob(...)]` to `audio=Blob(...)` (cleaner SDK field).
+- UI: Added `btn-done` ("✅ Done Speaking") button, hidden until user presses "Your Turn". AI speaking state hides done button and resets speaking state.
+- Report flow: confirmed `save_report`/`load_report` both use `session:{session_id}:report` key — no mismatch. Double coach was causing confusion in logs.
+- BUG FIX 1: `sync_state_node` had `live_interviewer` as positional arg — LangGraph only passes `state`. Fixed by removing the arg from the node signature. `sync_to_state()` now does all data merging (transcript, auditor notes, turn_count) DIRECTLY before calling `graph.ainvoke()`. LangGraph is only used for phase routing logic now.
+- BUG FIX 2: Flash Live session closed immediately with `1000 None`. Root cause: `connect().__aenter__()` was called but the context manager object was discarded — session was immediately garbage-collected/closed. Fixed by storing the CM as `self._live_cm` and calling `__aenter__()` on it, then `__aexit__()` on close.
+- Both files diagnostics-clean after fixes.
+
+### 2026-03-18 — Session 5 (current)
+- Refinement 1: Mid-session RAG — ChromaDB queried on every student turn in deep_dive/stress_test, context injected into Flash Live as non-blocking asyncio.create_task()
+- Refinement 2: Real-time auditor metadata — ws_metadata_sink added to InterviewSession, drained in send_task and pushed as JSON frames; frontend heatmap renders hesitation score, tech clarity, metric badge per turn
+- Refinement 3: is_derived_metric on FeedbackItem — Pro instructed to set true only when metric is verbatim from resume power_facts; frontend shows "Verified metric" vs "Suggested — fill in your number"
+- Refinement 4: 60-second reconnect buffer — disconnect records timestamp, session stays alive, reconnect resumes without triggering Coach; cleanup task fires after window expires
+- All 8 modified files pass diagnostics clean
 
 ### 2026-03-18 — Session 4 (current)
 - Built agents/auditor.py: pure heuristic scoring, no LLM, asyncio.create_task safe

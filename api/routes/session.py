@@ -95,6 +95,7 @@ async def start_session(
             session_id=session_id,
             resume_json=resume_json,
             api_key=api_key,
+            chroma_client=chroma,
         )
         register_session(session)
 

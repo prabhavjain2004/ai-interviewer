@@ -30,12 +30,12 @@ from typing import TYPE_CHECKING
 from langgraph.graph import END, StateGraph
 
 from agents.auditor import make_auditor_callback
-from agents.interviewer import interviewer_node, resolve_next_phase
+from agents.interviewer import resolve_next_phase
 from core.state import InterviewState
 from core.streaming_manager import LiveInterviewer
 
 if TYPE_CHECKING:
-    from services.redis_client import RedisClient
+    from services.chroma_client import ChromaClient
 
 logger = logging.getLogger(__name__)
 
@@ -46,12 +46,16 @@ logger = logging.getLogger(__name__)
 # Called after each audio turn completes.
 # ---------------------------------------------------------------------------
 
-async def sync_state_node(
-    state: InterviewState,
-    live_interviewer: LiveInterviewer,
-) -> dict:
-    """Delegates to interviewer_node for phase management + transcript sync."""
-    return await interviewer_node(state, live_interviewer)
+async def sync_state_node(state: InterviewState) -> dict:
+    """
+    Lightweight LangGraph node — only handles phase routing logic.
+    Transcript/auditor merging is done BEFORE graph invocation in sync_to_state().
+    LangGraph nodes only receive `state` — no extra positional args allowed.
+    """
+    current_status: str = state.get("status", "warm_up")
+    turn_count: int = state.get("turn_count", 0)
+    next_phase = resolve_next_phase(current_status, turn_count)
+    return {"status": next_phase}
 
 
 # ---------------------------------------------------------------------------
@@ -202,22 +206,35 @@ class InterviewSession:
         session_id: str,
         resume_json: dict,
         api_key: str,
+        chroma_client: "ChromaClient | None" = None,
     ) -> None:
         self.session_id = session_id
         self.api_key = api_key
 
-        # Auditor notes accumulate here; orchestrator flushes to Redis periodically
         self._auditor_notes_sink: list[dict] = []
+        self.ws_metadata_sink: list[dict] = []
+        self.ws_transcript_sink: list[dict] = []
 
-        # Build auditor callback — wired into LiveInterviewer
-        auditor_callback = make_auditor_callback(resume_json, self._auditor_notes_sink)
+        auditor_callback = make_auditor_callback(
+            resume_json,
+            self._auditor_notes_sink,
+            self.ws_metadata_sink,
+        )
 
-        # LiveInterviewer — Flash Live connection manager
+        def transcript_callback(speaker: str, text: str) -> None:
+            self.ws_transcript_sink.append({
+                "type": "transcript",
+                "speaker": speaker,
+                "text": text,
+            })
+
         self.live_interviewer = LiveInterviewer(
             session_id=session_id,
             resume_json=resume_json,
             initial_phase="warm_up",
             on_auditor_trigger=auditor_callback,
+            on_transcript_event=transcript_callback,
+            chroma_client=chroma_client,
         )
 
     async def start(self) -> None:
@@ -237,31 +254,46 @@ class InterviewSession:
         self._auditor_notes_sink.clear()
         return notes
 
+    def drain_ws_metadata(self) -> list[dict]:
+        """
+        Returns and clears pending real-time auditor metadata + transcript events.
+        Called by api/websocket.py send_task on every audio chunk to push to frontend.
+        """
+        items = list(self.ws_transcript_sink) + list(self.ws_metadata_sink)
+        self.ws_transcript_sink.clear()
+        self.ws_metadata_sink.clear()
+        return items
+
     async def sync_to_state(self, current_state: InterviewState) -> InterviewState:
         """
-        Runs the LangGraph graph for one sync cycle.
-        Merges latest transcript + auditor notes into state.
-        Returns updated state (caller persists to Redis).
+        Merges latest LiveInterviewer state into current_state directly.
+        Phase routing done inline — no LangGraph invocation on the hot path.
+        LangGraph graph is only used at startup for compilation/validation.
         """
-        graph = get_compiled_graph()
-
-        # Merge pending auditor notes into state before graph run
+        # 1. Merge pending auditor notes
         pending_notes = self.drain_auditor_notes()
         if pending_notes:
-            current_state["auditor_notes"] = (
-                current_state.get("auditor_notes", []) + pending_notes
+            existing = current_state.get("auditor_notes") or []
+            current_state["auditor_notes"] = existing + pending_notes
+
+        # 2. Sync transcript + turn count from LiveInterviewer
+        current_state["transcript"] = self.live_interviewer.export_transcript()
+        current_state["turn_count"] = self.live_interviewer.turn_count
+
+        # 3. Phase routing — inline, no graph invocation needed
+        old_phase = current_state.get("status", "warm_up")
+        new_phase = resolve_next_phase(old_phase, current_state["turn_count"])
+        current_state["status"] = new_phase
+
+        # 4. If phase changed, update Flash Live system_instruction
+        if new_phase != old_phase and self.live_interviewer.is_connected:
+            await self.live_interviewer.update_phase(new_phase)
+            logger.info(
+                "Phase transition | session=%s | %s -> %s",
+                self.session_id, old_phase, new_phase,
             )
 
-        # Inject live_interviewer into node via config (LangGraph configurable)
-        updated_state = await graph.ainvoke(
-            current_state,
-            config={
-                "configurable": {
-                    "live_interviewer": self.live_interviewer,
-                }
-            },
-        )
-        return updated_state
+        return current_state
 
 
 # ---------------------------------------------------------------------------

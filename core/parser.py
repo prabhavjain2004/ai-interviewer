@@ -27,7 +27,7 @@ from core.state import ProjectEntity, ResumeProfile, RoleEntity
 
 logger = logging.getLogger(__name__)
 
-PRO_MODEL = "models/gemini-1.5-pro-latest"
+PRO_MODEL = "models/gemini-2.5-pro"
 
 # ---------------------------------------------------------------------------
 # Extraction prompt — structured JSON output enforced via response_schema
@@ -36,66 +36,29 @@ PRO_MODEL = "models/gemini-1.5-pro-latest"
 EXTRACTION_PROMPT = """
 You are a resume parser. Extract structured information from the resume text below.
 
-Return a JSON object with exactly these fields:
-{
-  "raw_text": "<full resume text verbatim>",
+Return ONLY a valid JSON object with exactly these fields — no markdown, no explanation:
+{{
   "projects": [
-    {"name": "<project name>", "tech_used": ["<tech1>", "<tech2>"], "outcome": "<one sentence outcome>"}
+    {{"name": "<project name>", "tech_used": ["<tech1>", "<tech2>"], "outcome": "<one sentence outcome>"}}
   ],
   "roles": [
-    {"title": "<job title>", "company": "<company name>", "duration": "<e.g. Jun 2023 - Aug 2023>"}
+    {{"title": "<job title>", "company": "<company name>", "duration": "<e.g. Jun 2023 - Aug 2023>"}}
   ],
   "tech_stack": ["<unique tech items across entire resume>"],
   "career_goals": "<stated objective or target role, or inferred from context>",
   "power_facts": ["<quantifiable achievement e.g. 'Reduced API latency by 40%'>"]
-}
+}}
 
 Rules:
-- power_facts must be quantifiable — include numbers, percentages, or scale indicators.
-- If no quantifiable facts exist, return an empty list.
+- power_facts must be quantifiable — include numbers, percentages, or scale indicators. Empty list if none.
 - tech_stack must be deduplicated.
 - Extract ALL projects, even side projects or academic ones.
 - career_goals: use the resume objective/summary if present, otherwise infer from roles.
+- Return ONLY the JSON object. No markdown fences. No extra text.
 
 RESUME TEXT:
 {resume_text}
 """
-
-# Pydantic schema for Gemini structured output
-_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "raw_text": {"type": "string"},
-        "projects": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "tech_used": {"type": "array", "items": {"type": "string"}},
-                    "outcome": {"type": "string"},
-                },
-                "required": ["name"],
-            },
-        },
-        "roles": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "company": {"type": "string"},
-                    "duration": {"type": "string"},
-                },
-                "required": ["title", "company"],
-            },
-        },
-        "tech_stack": {"type": "array", "items": {"type": "string"}},
-        "career_goals": {"type": "string"},
-        "power_facts": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["raw_text", "projects", "roles", "tech_stack", "career_goals", "power_facts"],
-}
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +140,7 @@ async def parse_resume(
         except OSError as e:
             logger.warning("Could not delete resume file | error=%s", e)
 
-    # Step 3: Gemini Pro extraction
+    # Step 3: Gemini Pro extraction — plain JSON mode, no response_schema
     client = genai.Client(api_key=api_key)
     prompt = EXTRACTION_PROMPT.format(resume_text=resume_text)
 
@@ -186,8 +149,7 @@ async def parse_resume(
         contents=prompt,
         config=genai_types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=_RESPONSE_SCHEMA,
-            temperature=0.1,  # Low temp — we want deterministic extraction
+            temperature=0.1,
         ),
     )
 
@@ -195,15 +157,18 @@ async def parse_resume(
     if not raw_json:
         raise ValueError("Gemini Pro returned empty response during resume parsing.")
 
+    # Strip markdown fences if model wraps output (e.g. ```json ... ```)
+    raw_json = raw_json.strip()
+    if raw_json.startswith("```"):
+        raw_json = re.sub(r"^```[a-z]*\n?", "", raw_json)
+        raw_json = re.sub(r"\n?```$", "", raw_json).strip()
+
     # Step 4: Parse and validate
     try:
         data = json.loads(raw_json)
-        # Ensure raw_text is preserved (Gemini may truncate it)
-        if not data.get("raw_text"):
-            data["raw_text"] = resume_text
 
         profile = ResumeProfile(
-            raw_text=data["raw_text"],
+            raw_text=resume_text,          # Always use the original extracted text
             projects=[ProjectEntity(**p) for p in data.get("projects", [])],
             roles=[RoleEntity(**r) for r in data.get("roles", [])],
             tech_stack=data.get("tech_stack", []),

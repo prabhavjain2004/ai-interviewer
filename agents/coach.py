@@ -35,7 +35,7 @@ from core.state import (
 
 logger = logging.getLogger(__name__)
 
-PRO_MODEL = "models/gemini-1.5-pro-latest"
+PRO_MODEL = "models/gemini-2.5-pro"
 
 # ---------------------------------------------------------------------------
 # Wellfound categories — must match FeedbackItem.category Literal exactly
@@ -91,6 +91,7 @@ Your output must be a JSON object with exactly this structure:
       "resume_claim": "<what the resume says they did — directly relevant to this category>",
       "diagnosis": "<specific named weakness — NOT generic. E.g. 'Missing quantifiable outcome on Redis caching claim' not 'answer was weak'>",
       "elite_script": "<15-30 second rewrite. MUST use STAR structure, industry terminology, and at least one metric>",
+      "is_derived_metric": <true if the metric in elite_script was found verbatim in the resume power_facts, false if it is a suggested placeholder>,
       "mirror": {{
         "resume_claim": "<resume claim being compared>",
         "student_said": "<what student actually said>",
@@ -158,10 +159,11 @@ _FEEDBACK_ITEM_SCHEMA = {
         "resume_claim": {"type": "string"},
         "diagnosis": {"type": "string"},
         "elite_script": {"type": "string"},
+        "is_derived_metric": {"type": "boolean"},
         "mirror": _MIRROR_SCHEMA,
     },
     "required": ["category", "score", "student_quote", "resume_claim",
-                 "diagnosis", "elite_script", "mirror"],
+                 "diagnosis", "elite_script", "is_derived_metric", "mirror"],
 }
 
 _COACH_REPORT_SCHEMA = {
@@ -231,6 +233,7 @@ async def generate_coach_report(
                 resume_claim=item["resume_claim"],
                 diagnosis=item["diagnosis"],
                 elite_script=item["elite_script"],
+                is_derived_metric=item.get("is_derived_metric", False),
                 mirror=MirrorResult(**item["mirror"]),
             )
             for item in data["feedback"]
@@ -270,15 +273,20 @@ async def run_coach_background(
 ) -> None:
     """
     Wrapper for running coach as a FastAPI BackgroundTask.
-    Generates report and saves to Redis under session_id:report.
+    Generates report and saves to Redis under session:{session_id}:report.
     Never raises — exceptions are caught and logged.
+    Dedup guard: skips if report already exists (prevents double-trigger).
     """
     session_id = state.get("session_id", "unknown")
     try:
+        # Dedup guard — if report already exists, skip
+        existing = await redis_client.load_report(session_id)
+        if existing:
+            logger.info("Coach report already exists — skipping duplicate | session=%s", session_id)
+            return
         report = await generate_coach_report(state, api_key)
-        report_key = f"{session_id}:report"
-        await redis_client.set_json(report_key, report.model_dump(mode="json"))
-        logger.info("Coach report saved to Redis | key=%s", report_key)
+        await redis_client.save_report(session_id, report.model_dump(mode="json"))
+        logger.info("Coach report saved to Redis | key=%s", redis_client.report_key(session_id))
     except Exception as exc:
         logger.error(
             "Coach background task failed | session=%s | error=%s",

@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Interviewer & Mentor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --accent: #6c63ff;
+      --accent-dim: #3d3880;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --radius: 12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 4px;
+    }
+    .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 32px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      width: 100%;
+      max-width: 640px;
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 16px;
+    }
+
+    /* Upload */
+    .upload-area {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+    .upload-area:hover, .upload-area.drag-over { border-color: var(--accent); }
+    .upload-area input { display: none; }
+    .upload-icon { font-size: 2rem; margin-bottom: 8px; }
+    .upload-label { font-size: 0.875rem; color: var(--muted); }
+    .upload-label span { color: var(--accent); cursor: pointer; }
+    .file-name {
+      margin-top: 12px;
+      font-size: 0.8rem;
+      color: var(--green);
+      display: none;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { opacity: 0.88; }
+    .btn-danger  { background: var(--red); color: #fff; }
+    .btn-danger:hover:not(:disabled) { opacity: 0.88; }
+    .btn-ghost   { background: var(--border); color: var(--text); }
+    .btn-ghost:hover:not(:disabled) { background: #333649; }
+
+    /* Status pill */
+    .status-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .pill-idle    { background: #1e2130; color: var(--muted); }
+    .pill-live    { background: #14291a; color: var(--green); }
+    .pill-warmup  { background: #1e2130; color: #818cf8; }
+    .pill-deep    { background: #1e2130; color: var(--yellow); }
+    .pill-stress  { background: #2a1a1a; color: var(--red); }
+    .pill-done    { background: #14291a; color: var(--green); }
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .dot.pulse { animation: pulse 1.4s infinite; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Visualiser */
+    .visualiser-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 48px;
+      margin: 16px 0;
+    }
+    .bar {
+      width: 4px;
+      border-radius: 2px;
+      background: var(--accent);
+      height: 6px;
+      transition: height 0.08s ease;
+    }
+
+    /* Controls */
+    .controls { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* Transcript */
+    #transcript {
+      max-height: 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      scroll-behavior: smooth;
+    }
+    .turn {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .turn-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .turn.interviewer .turn-label { color: var(--accent); }
+    .turn.student .turn-label     { color: var(--green); }
+    .turn-text {
+      font-size: 0.875rem;
+      line-height: 1.55;
+      color: var(--text);
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .turn.interviewer .turn-text { border-left: 3px solid var(--accent); }
+    .turn.student .turn-text     { border-left: 3px solid var(--green); }
+    .empty-state { color: var(--muted); font-size: 0.875rem; text-align: center; padding: 24px 0; }
+
+    /* Report */
+    #report-section { display: none; }
+    .score-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .score-item {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .score-label { font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; }
+    .score-val   { font-size: 1.25rem; font-weight: 700; }
+    .score-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-top: 6px; }
+    .score-bar { height: 4px; border-radius: 2px; background: var(--accent); }
+
+    .feedback-item {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 10px;
+      border-left: 3px solid var(--accent-dim);
+    }
+    .feedback-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .feedback-cat { font-size: 0.8rem; font-weight: 700; color: var(--accent); }
+    .feedback-score { font-size: 0.8rem; font-weight: 700; }
+    .feedback-quote {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-style: italic;
+      margin-bottom: 6px;
+      padding: 6px 10px;
+      background: var(--surface);
+      border-radius: 6px;
+    }
+    .feedback-diagnosis { font-size: 0.8rem; color: var(--yellow); margin-bottom: 8px; }
+    .elite-script-label { font-size: 0.7rem; font-weight: 700; color: var(--green); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .elite-script-text  { font-size: 0.82rem; line-height: 1.6; color: var(--text); }
+
+    .summary-box {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 14px;
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: var(--text);
+      margin-bottom: 16px;
+      border-left: 3px solid var(--green);
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(80px);
+      background: #1e2130;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      transition: transform 0.25s ease;
+      z-index: 999;
+      white-space: nowrap;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* Report Modal */
+    #report-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #report-modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 680px;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #report-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #report-modal-content {
+      overflow-y: auto;
+      padding: 20px;
+      flex: 1;
+    }
+
+    /* Heatmap */
+    .heatmap-row { display: flex; align-items: center; gap: 10px; }
+    .heatmap-label { font-size: 0.72rem; color: var(--muted); width: 52px; flex-shrink: 0; }
+    .heatmap-bar-wrap { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .heatmap-bar { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+    .heatmap-flags { font-size: 0.7rem; color: var(--yellow); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric-badge {
+      font-size: 0.68rem; font-weight: 700; padding: 2px 7px;
+      border-radius: 999px; flex-shrink: 0;
+    }
+    .metric-yes { background: #14291a; color: var(--green); }
+    .metric-no  { background: #2a1a1a; color: var(--red); }
+  </style>
+</head>
+<body>
+
+  <h1>AI Interviewer & Mentor</h1>
+  <p class="subtitle">Powered by Gemini Live · Mirror & Mentor coaching</p>
+
+  <!-- Step 1: Upload Resume -->
+  <div class="card" id="upload-card">
+    <div class="card-title">Step 1 — Upload Resume</div>
+    <div class="upload-area" id="drop-zone">
+      <input type="file" id="resume-file" accept=".pdf,.txt,.md" />
+      <div class="upload-icon">📄</div>
+      <div class="upload-label">
+        Drop your resume here or <span onclick="document.getElementById('resume-file').click()">browse</span>
+      </div>
+      <div class="upload-label" style="margin-top:4px;font-size:0.75rem;">PDF, TXT or MD · max 5MB</div>
+      <div class="file-name" id="file-name-display"></div>
+    </div>
+    <div style="margin-top:16px;">
+      <button class="btn btn-primary" id="btn-start" disabled>
+        <span>🚀</span> Start Interview
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 2: Interview -->
+  <div class="card" id="interview-card" style="display:none;">
+    <div class="card-title">Step 2 — Live Interview</div>
+
+    <div class="status-row">
+      <div class="pill pill-idle" id="status-pill">
+        <div class="dot" id="status-dot"></div>
+        <span id="status-text">Idle</span>
+      </div>
+      <span style="font-size:0.8rem;color:var(--muted);" id="turn-counter">Turn 0</span>
+    </div>
+
+    <!-- Audio visualiser -->
+    <div class="visualiser-wrap" id="visualiser">
+      <!-- bars injected by JS -->
+    </div>
+
+    <div class="controls">
+      <button class="btn btn-primary" id="btn-mic" disabled>
+        🎙️ Mic On
+      </button>
+      <button class="btn btn-ghost" id="btn-done" disabled style="display:none;">
+        ✅ Done Speaking
+      </button>
+      <button class="btn btn-danger" id="btn-end" disabled>
+        ⏹ End Interview
+      </button>
+      <button class="btn btn-ghost" id="btn-report" style="display:none;" onclick="openReportModal()">
+        📋 View Report
+      </button>
+    </div>
+  </div>
+
+  <!-- Transcript -->
+  <div class="card" id="transcript-card" style="display:none;">
+    <div class="card-title">Transcript</div>
+    <div id="transcript">
+      <div class="empty-state">Transcript will appear here during the interview.</div>
+    </div>
+  </div>
+
+  <!-- Communication Heatmap -->
+  <div class="card" id="heatmap-card" style="display:none;">
+    <div class="card-title">Communication Heatmap <span style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;">— live</span></div>
+    <div id="heatmap-rows" style="display:flex;flex-direction:column;gap:8px;"></div>
+  </div>
+
+  <!-- Report -->
+  <div class="card" id="report-section" style="display:none;">
+    <div class="card-title">Mirror & Mentor Report</div>
+    <div id="report-content"></div>
+  </div>
+
+  <!-- Report Modal -->
+  <div id="report-modal" style="display:none;" onclick="if(event.target===this)closeReportModal()">
+    <div id="report-modal-box">
+      <div id="report-modal-header">
+        <span style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Mirror & Mentor Report</span>
+        <button onclick="closeReportModal()" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div id="report-modal-content"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let sessionId = null;
+let ws = null;
+let mediaStream = null;
+let audioContext = null;
+let processor = null;
+let micActive = false;
+let analyser = null;
+let animFrame = null;
+const BARS = 28;
+
+// ---------------------------------------------------------------------------
+// Visualiser
+// ---------------------------------------------------------------------------
+const visEl = document.getElementById('visualiser');
+for (let i = 0; i < BARS; i++) {
+  const b = document.createElement('div');
+  b.className = 'bar';
+  visEl.appendChild(b);
+}
+const bars = visEl.querySelectorAll('.bar');
+
+function animateVisualiser(dataArray) {
+  const step = Math.floor(dataArray.length / BARS);
+  bars.forEach((b, i) => {
+    const val = dataArray[i * step] || 0;
+    const h = Math.max(4, (val / 255) * 44);
+    b.style.height = h + 'px';
+    b.style.opacity = 0.4 + (val / 255) * 0.6;
+  });
+}
+
+function flatVisualiser() {
+  bars.forEach(b => { b.style.height = '4px'; b.style.opacity = '0.3'; });
+}
+
+// ---------------------------------------------------------------------------
+// Status pill
+// ---------------------------------------------------------------------------
+const pillEl   = document.getElementById('status-pill');
+const dotEl    = document.getElementById('status-dot');
+const textEl   = document.getElementById('status-text');
+const turnEl   = document.getElementById('turn-counter');
+
+const PHASE_MAP = {
+  idle:       { cls: 'pill-idle',   label: 'Idle',       pulse: false },
+  connecting: { cls: 'pill-idle',   label: 'Connecting', pulse: true  },
+  warm_up:    { cls: 'pill-warmup', label: 'Warm Up',    pulse: true  },
+  deep_dive:  { cls: 'pill-deep',   label: 'Deep Dive',  pulse: true  },
+  stress_test:{ cls: 'pill-stress', label: 'Stress Test',pulse: true  },
+  finished:   { cls: 'pill-done',   label: 'Finished',   pulse: false },
+};
+
+function setStatus(phase, turns) {
+  const p = PHASE_MAP[phase] || PHASE_MAP.idle;
+  pillEl.className = 'pill ' + p.cls;
+  textEl.textContent = p.label;
+  dotEl.className = 'dot' + (p.pulse ? ' pulse' : '');
+  if (turns !== undefined) turnEl.textContent = `Turn ${turns}`;
+}
+
+// ---------------------------------------------------------------------------
+// Toast
+// ---------------------------------------------------------------------------
+let toastTimer;
+function toast(msg, duration = 3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+}
+
+// ---------------------------------------------------------------------------
+// Upload & drag-drop
+// ---------------------------------------------------------------------------
+const dropZone  = document.getElementById('drop-zone');
+const fileInput = document.getElementById('resume-file');
+const fileNameEl= document.getElementById('file-name-display');
+const btnStart  = document.getElementById('btn-start');
+let selectedFile = null;
+
+function onFileSelected(file) {
+  if (!file) return;
+  selectedFile = file;
+  fileNameEl.textContent = '✓ ' + file.name;
+  fileNameEl.style.display = 'block';
+  btnStart.disabled = false;
+}
+
+fileInput.addEventListener('change', () => onFileSelected(fileInput.files[0]));
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  onFileSelected(e.dataTransfer.files[0]);
+});
+
+// ---------------------------------------------------------------------------
+// Start interview
+// ---------------------------------------------------------------------------
+btnStart.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  btnStart.disabled = true;
+  btnStart.textContent = 'Uploading…';
+
+  try {
+    // 1. Upload resume
+    const form = new FormData();
+    form.append('file', selectedFile);
+    const upRes = await fetch('/resume/upload', { method: 'POST', body: form });
+    if (!upRes.ok) throw new Error(await upRes.text());
+    const { file_path } = await upRes.json();
+
+    // 2. Start session
+    const sessRes = await fetch('/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_file_path: file_path }),
+    });
+    if (!sessRes.ok) throw new Error(await sessRes.text());
+    const { session_id } = await sessRes.json();
+    sessionId = session_id;
+
+    // Show interview UI
+    document.getElementById('upload-card').style.display = 'none';
+    document.getElementById('interview-card').style.display = 'block';
+    document.getElementById('transcript-card').style.display = 'block';
+    setStatus('connecting');
+    connectWebSocket();
+
+  } catch (err) {
+    toast('Error: ' + err.message);
+    btnStart.disabled = false;
+    btnStart.innerHTML = '<span>🚀</span> Start Interview';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// WebSocket
+// ---------------------------------------------------------------------------
+function connectWebSocket() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/interview/${sessionId}`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    setStatus('warm_up', 0);
+    document.getElementById('btn-mic').disabled = false;
+    document.getElementById('btn-end').disabled = false;
+    // Auto-start mic so it's ready — starts muted, user presses "Your Turn" to speak
+    startMic();
+    toast('Connected — AI will greet you first…');
+  };
+
+  ws.onmessage = async (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // Resume AudioContext if browser suspended it (autoplay policy)
+      if (playCtx && playCtx.state === 'suspended') playCtx.resume();
+      scheduleChunk(event.data);
+    } else if (typeof event.data === 'string') {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'transcript') appendTranscript(msg.speaker, msg.text);
+        if (msg.type === 'status')     setStatus(msg.phase, msg.turn_count);
+        if (msg.type === 'auditor')    appendHeatmapRow(msg);
+        if (msg.type === 'error')      toast('⚠ ' + msg.message);
+      } catch (_) {
+        if (event.data.startsWith('ERROR')) toast('⚠ ' + event.data);
+      }
+    }
+  };
+
+  ws.onclose = () => {
+    setStatus('finished');
+    stopMic();
+    flatVisualiser();
+    document.getElementById('btn-mic').disabled = true;
+    document.getElementById('btn-end').disabled = true;
+    toast('Interview ended. Fetching report…');
+    pollReport();
+  };
+
+  ws.onerror = () => toast('WebSocket error — check server logs.');
+}
+
+// ---------------------------------------------------------------------------
+// Mic — toggle mute/unmute (mic stream stays open, just gate the WS send)
+// ---------------------------------------------------------------------------
+let micMuted = false;
+let isSpeaking = false;  // true while user is actively speaking (between mic-on and done)
+const btnMic  = document.getElementById('btn-mic');
+const btnDone = document.getElementById('btn-done');
+
+btnMic.addEventListener('click', () => {
+  if (!micActive) { startMic(); return; }
+  if (aiSpeaking) return;  // can't start speaking while AI is speaking
+  if (!isSpeaking) {
+    // Start speaking turn
+    isSpeaking = true;
+    micMuted = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send('ACTIVITY_START');
+    }
+    btnMic.innerHTML = '🎙️ Speaking…';
+    btnMic.className = 'btn btn-danger';
+    btnDone.style.display = 'inline-flex';
+    btnDone.disabled = false;
+  }
+});
+
+btnDone.addEventListener('click', () => {
+  if (!isSpeaking) return;
+  // Signal turn complete to server
+  isSpeaking = false;
+  micMuted = true;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('TURN_COMPLETE');
+  }
+  btnMic.innerHTML = '🎙️ Your Turn';
+  btnMic.className = 'btn btn-primary';
+  btnDone.style.display = 'none';
+  btnDone.disabled = true;
+});
+
+async function startMic() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 16000,
+      },
+      video: false,
+    });
+    audioContext = new AudioContext({ sampleRate: 16000 });
+    const source = audioContext.createMediaStreamSource(mediaStream);
+
+    // Analyser for visualiser
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+
+    // ScriptProcessor to capture raw PCM and send over WS
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    function drawFrame() {
+      animFrame = requestAnimationFrame(drawFrame);
+      // Only animate bars while user is actively in their speaking turn
+      if (!isSpeaking || micMuted || aiSpeaking) {
+        flatVisualiser();
+        return;
+      }
+      analyser.getByteFrequencyData(dataArray);
+      animateVisualiser(dataArray);
+    }
+    drawFrame();
+
+    processor.onaudioprocess = (e) => {
+      // Only send audio when user is actively in their speaking turn
+      if (!ws || ws.readyState !== WebSocket.OPEN || micMuted || aiSpeaking || !isSpeaking) return;
+      const float32 = e.inputBuffer.getChannelData(0);
+      // Convert Float32 PCM → Int16 PCM
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+      }
+      ws.send(int16.buffer);
+    };
+
+    micActive = true;
+    micMuted = true;   // start muted — user presses mic button to begin speaking
+    isSpeaking = false;
+    btnMic.innerHTML = '🎙️ Your Turn';
+    btnMic.className = 'btn btn-primary';
+    btnMic.disabled = false;
+  } catch (err) {
+    toast('Mic error: ' + err.message);
+  }
+}
+
+function stopMic() {
+  if (processor)    { processor.disconnect(); processor = null; }
+  if (analyser)     { analyser.disconnect(); analyser = null; }
+  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (animFrame)    { cancelAnimationFrame(animFrame); animFrame = null; }
+  clearTimeout(aiSpeakingTimer);
+  flatVisualiser();
+  micActive = false;
+  micMuted = true;
+  isSpeaking = false;
+  aiSpeaking = false;
+  btnMic.innerHTML = '🎙️ Mic On';
+  btnMic.className = 'btn btn-primary';
+  btnDone.style.display = 'none';
+  btnDone.disabled = true;
+}
+
+// ---------------------------------------------------------------------------
+// AI audio playback — single persistent AudioContext, scheduled queue
+// Gemini Live outputs 24kHz signed 16-bit PCM
+//
+// KEY BEHAVIOUR: mic is muted while AI is speaking + 600ms after last chunk.
+// This prevents echo from triggering Gemini's VAD mid-answer.
+// ---------------------------------------------------------------------------
+let playCtx = null;
+let nextPlayTime = 0;
+let aiSpeakingTimer = null;   // debounce timer — fires when AI stops sending chunks
+let aiSpeaking = false;
+
+function getPlayCtx() {
+  if (!playCtx || playCtx.state === 'closed') {
+    playCtx = new AudioContext({ sampleRate: 24000 });
+    nextPlayTime = 0;
+  }
+  return playCtx;
+}
+
+function onAiChunkReceived() {
+  // Mark AI as speaking — disable mic controls
+  if (!aiSpeaking) {
+    aiSpeaking = true;
+    // If user was mid-turn, cancel it (AI interrupted or responded)
+    if (isSpeaking) {
+      isSpeaking = false;
+      btnDone.style.display = 'none';
+      btnDone.disabled = true;
+    }
+    micMuted = true;
+    updateMicButton();
+  }
+  // Reset the silence debounce on every chunk
+  clearTimeout(aiSpeakingTimer);
+  aiSpeakingTimer = setTimeout(() => {
+    // No new chunk for 600ms — AI has finished speaking
+    aiSpeaking = false;
+    micMuted = true;  // stay muted — user must press "Your Turn" to speak
+    updateMicButton();
+  }, 600);
+}
+
+function updateMicButton() {
+  if (!micActive) return;
+  if (aiSpeaking) {
+    btnMic.innerHTML = '🔊 AI Speaking…';
+    btnMic.className = 'btn btn-ghost';
+    btnMic.disabled = true;
+  } else if (isSpeaking) {
+    btnMic.innerHTML = '🎙️ Speaking…';
+    btnMic.className = 'btn btn-danger';
+    btnMic.disabled = false;
+  } else {
+    btnMic.innerHTML = '🎙️ Your Turn';
+    btnMic.className = 'btn btn-primary';
+    btnMic.disabled = false;
+  }
+}
+
+function scheduleChunk(arrayBuffer) {
+  try {
+    onAiChunkReceived();   // mute mic, reset debounce
+
+    const ctx = getPlayCtx();
+    const int16 = new Int16Array(arrayBuffer);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768;
+    }
+    const buffer = ctx.createBuffer(1, float32.length, 24000);
+    buffer.copyToChannel(float32, 0);
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+
+    // Schedule back-to-back — no gaps, no overlaps
+    const startAt = Math.max(ctx.currentTime, nextPlayTime);
+    src.start(startAt);
+    nextPlayTime = startAt + buffer.duration;
+  } catch (err) {
+    console.warn('Audio schedule error:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// End interview
+// ---------------------------------------------------------------------------
+document.getElementById('btn-end').addEventListener('click', async () => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send('END_INTERVIEW');
+  stopMic();
+  document.getElementById('btn-end').disabled = true;
+  document.getElementById('btn-mic').disabled = true;
+
+  // Also call DELETE /session to trigger coach report
+  try {
+    await fetch(`/session/${sessionId}`, { method: 'DELETE' });
+  } catch (_) {}
+});
+
+// ---------------------------------------------------------------------------
+// Transcript
+// ---------------------------------------------------------------------------
+function appendTranscript(speaker, text) {
+  const container = document.getElementById('transcript');
+  // Remove empty state
+  const empty = container.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const turn = document.createElement('div');
+  turn.className = 'turn ' + speaker;
+  turn.innerHTML = `
+    <div class="turn-label">${speaker === 'interviewer' ? '🤖 Interviewer' : '🎓 You'}</div>
+    <div class="turn-text">${escHtml(text)}</div>
+  `;
+  container.appendChild(turn);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Communication Heatmap (real-time auditor metadata)
+// ---------------------------------------------------------------------------
+function appendHeatmapRow(meta) {
+  const card = document.getElementById('heatmap-card');
+  const rows = document.getElementById('heatmap-rows');
+  card.style.display = 'block';
+
+  // hesitation bar: 0.0 (green) → 1.0 (red)
+  const h = meta.hesitation_score || 0;
+  const barColor = h < 0.15 ? '#22c55e' : h < 0.35 ? '#f59e0b' : '#ef4444';
+  const barWidth = Math.round(h * 100);
+
+  // tech clarity bar: 1-5 → 20%-100%
+  const clarity = meta.tech_stack_clarity || 1;
+  const clarityColor = clarity >= 4 ? '#22c55e' : clarity >= 2 ? '#f59e0b' : '#ef4444';
+
+  const flags = (meta.red_flags || []).join(', ') || '—';
+
+  const row = document.createElement('div');
+  row.style.cssText = 'background:var(--bg);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;';
+  row.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:0.72rem;color:var(--muted);">Turn ${meta.turn_index}</span>
+      <span class="metric-badge ${meta.metric_present ? 'metric-yes' : 'metric-no'}">${meta.metric_present ? '✓ Metric' : '✗ No metric'}</span>
+    </div>
+    <div class="heatmap-row">
+      <div class="heatmap-label">Hesitation</div>
+      <div class="heatmap-bar-wrap"><div class="heatmap-bar" style="width:${barWidth}%;background:${barColor}"></div></div>
+      <span style="font-size:0.7rem;color:${barColor};width:32px;text-align:right;">${Math.round(h*100)}%</span>
+    </div>
+    <div class="heatmap-row">
+      <div class="heatmap-label">Tech clarity</div>
+      <div class="heatmap-bar-wrap"><div class="heatmap-bar" style="width:${clarity*20}%;background:${clarityColor}"></div></div>
+      <span style="font-size:0.7rem;color:${clarityColor};width:32px;text-align:right;">${clarity}/5</span>
+    </div>
+    <div style="font-size:0.7rem;color:var(--yellow);">⚑ ${escHtml(flags)}</div>
+  `;
+  rows.appendChild(row);
+}
+
+// ---------------------------------------------------------------------------
+// Poll for report
+// ---------------------------------------------------------------------------
+async function pollReport(attempts = 0) {
+  if (attempts > 40) { toast('Report taking longer than expected — try the View Report button later.'); return; }
+  try {
+    const res = await fetch(`/report/${sessionId}`);
+    if (res.status === 202 || res.status === 400) {
+      setTimeout(() => pollReport(attempts + 1), 3000);
+      return;
+    }
+    if (!res.ok) { toast('Could not load report.'); return; }
+    const report = await res.json();
+    storeReport(report);
+  } catch (_) {
+    setTimeout(() => pollReport(attempts + 1), 3000);
+  }
+}
+
+let cachedReport = null;
+
+function storeReport(report) {
+  cachedReport = report;
+  const btn = document.getElementById('btn-report');
+  btn.style.display = 'inline-flex';
+  btn.innerHTML = '📋 View Report';
+  btn.className = 'btn btn-primary';
+  toast('Report ready — click View Report ✓', 5000);
+}
+
+// ---------------------------------------------------------------------------
+// Report modal
+// ---------------------------------------------------------------------------
+function openReportModal() {
+  if (!cachedReport) { toast('Report not ready yet…'); return; }
+  document.getElementById('report-modal-content').innerHTML = buildReportHtml(cachedReport);
+  document.getElementById('report-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeReportModal() {
+  document.getElementById('report-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+// close on Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeReportModal(); });
+
+// ---------------------------------------------------------------------------
+// Render report HTML
+// ---------------------------------------------------------------------------
+function buildReportHtml(report) {
+  const scoreColor = (s) => s >= 7 ? '#22c55e' : s >= 4 ? '#f59e0b' : '#ef4444';
+
+  let html = `
+    <div class="summary-box">${escHtml(report.summary)}</div>
+    <div class="score-grid">
+      <div class="score-item">
+        <div class="score-label">Overall Score</div>
+        <div class="score-val" style="color:${scoreColor(report.overall_score)}">${report.overall_score.toFixed(1)}<span style="font-size:0.9rem;color:var(--muted)">/10</span></div>
+        <div class="score-bar-wrap"><div class="score-bar" style="width:${report.overall_score*10}%;background:${scoreColor(report.overall_score)}"></div></div>
+      </div>
+      <div class="score-item">
+        <div class="score-label">Categories Reviewed</div>
+        <div class="score-val">${report.feedback.length}<span style="font-size:0.9rem;color:var(--muted)">/6</span></div>
+      </div>
+    </div>
+  `;
+
+  for (const item of report.feedback) {
+    html += `
+      <div class="feedback-item">
+        <div class="feedback-header">
+          <div class="feedback-cat">${escHtml(item.category)}</div>
+          <div class="feedback-score" style="color:${scoreColor(item.score)}">${item.score}/10</div>
+        </div>
+        <div class="feedback-quote">"${escHtml(item.student_quote)}"</div>
+        <div class="feedback-diagnosis">⚠ ${escHtml(item.diagnosis)}</div>
+        <div class="elite-script-label">✦ Elite Script
+          <span style="margin-left:6px;font-size:0.65rem;padding:2px 7px;border-radius:999px;font-weight:700;${item.is_derived_metric ? 'background:#14291a;color:#22c55e;' : 'background:#1e1a2a;color:#a78bfa;'}">
+            ${item.is_derived_metric ? '✓ Verified metric' : '◈ Suggested — fill in your number'}
+          </span>
+        </div>
+        <div class="elite-script-text">${escHtml(item.elite_script)}</div>
+      </div>
+    `;
+  }
+  return html;
+}
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

@@ -126,35 +126,42 @@ async def audit_turn(
     Scores a single student answer. Pure heuristics — no LLM.
     Called via asyncio.create_task() from streaming_manager._fire_auditor().
     Returns AuditorNote — caller appends to InterviewState.auditor_notes.
-
     Never raises — exceptions are caught and logged so the live loop is never affected.
     """
     try:
         tech_stack: list[str] = resume_json.get("tech_stack", [])
+        words = student_text.split()
+        word_count = len(words)
+        filler_count = _count_filler_words(student_text)
+
+        # hesitation_score: ratio of filler words to total words, capped at 1.0
+        hesitation_score = round(min(filler_count / max(word_count, 1), 1.0), 3)
 
         note = AuditorNote(
             turn_index=turn_index,
             timestamp=datetime.now(timezone.utc),
             metric_present=_check_metric_present(student_text),
             tech_stack_clarity=_score_tech_clarity(student_text, tech_stack),
-            filler_word_count=_count_filler_words(student_text),
+            filler_word_count=filler_count,
             red_flags=_detect_red_flags(student_text),
             resume_entity_referenced=_find_resume_entity_referenced(student_text, resume_json),
+            hesitation_score=hesitation_score,
+            word_count=word_count,
         )
 
         logger.debug(
-            "Auditor scored turn | turn=%d | metric=%s | clarity=%d | fillers=%d | flags=%s",
+            "Auditor scored turn | turn=%d | metric=%s | clarity=%d | fillers=%d | hesitation=%.2f | flags=%s",
             turn_index,
             note.metric_present,
             note.tech_stack_clarity,
             note.filler_word_count,
+            note.hesitation_score,
             note.red_flags,
         )
         return note
 
     except Exception as exc:
         logger.warning("Auditor scoring failed | turn=%d | error=%s", turn_index, exc)
-        # Return a minimal note so state stays consistent
         return AuditorNote(
             turn_index=turn_index,
             timestamp=datetime.now(timezone.utc),
@@ -165,20 +172,34 @@ async def audit_turn(
 def make_auditor_callback(
     resume_json: dict,
     auditor_notes_sink: list[dict],
+    ws_metadata_sink: "list[dict] | None" = None,
 ) -> "AuditorCallback":
     """
     Factory that returns a callback compatible with LiveInterviewer._on_auditor_trigger.
-    The callback appends the AuditorNote dict to auditor_notes_sink in-place.
-    The orchestrator reads auditor_notes_sink and merges into InterviewState.
+    - Appends AuditorNote dict to auditor_notes_sink (for state/Redis).
+    - Appends real-time metadata to ws_metadata_sink (for WebSocket heatmap push).
 
     Usage in orchestrator:
         notes_sink: list[dict] = []
-        callback = make_auditor_callback(resume_json, notes_sink)
+        ws_sink: list[dict] = []
+        callback = make_auditor_callback(resume_json, notes_sink, ws_sink)
         live_interviewer = LiveInterviewer(..., on_auditor_trigger=callback)
     """
     async def _callback(student_text: str, turn_index: int) -> None:
         note = await audit_turn(student_text, turn_index, resume_json)
         auditor_notes_sink.append(note.model_dump(mode="json"))
+        # Push lightweight metadata to WS sink for real-time frontend heatmap
+        if ws_metadata_sink is not None:
+            ws_metadata_sink.append({
+                "type": "auditor",
+                "turn_index": turn_index,
+                "filler_word_count": note.filler_word_count,
+                "hesitation_score": note.hesitation_score,
+                "tech_stack_clarity": note.tech_stack_clarity,
+                "metric_present": note.metric_present,
+                "red_flags": note.red_flags,
+                "resume_entity_referenced": note.resume_entity_referenced,
+            })
 
     return _callback
 
