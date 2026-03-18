@@ -170,26 +170,26 @@ class LiveInterviewer:
             response_modalities=["AUDIO"],
             system_instruction=system_instruction,
             # Enable transcription for both sides — required for coach report
-            # Without these, input_transcription and model_turn text are never populated
             input_audio_transcription=genai_types.AudioTranscriptionConfig(),
             output_audio_transcription=genai_types.AudioTranscriptionConfig(),
-            # Disable thinking — 2.5 models have thinking on by default which
-            # returns text/thought parts instead of audio and breaks the live loop
-            generation_config=genai_types.GenerationConfig(
-                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-            ),
-            # VAD disabled — frontend sends explicit TURN_COMPLETE signal instead.
-            # Native VAD caused 10-15s delays when background noise (fan, AC) kept
-            # RMS above the noise gate threshold, preventing silence detection.
+            # Disable thinking — set directly on LiveConnectConfig (not nested in GenerationConfig)
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            # Automatic VAD enabled — aggressive tuning for fast response
+            # 200ms silence = responds in <1s after you stop speaking
+            # Browser's native noise suppression handles background noise
             realtime_input_config=genai_types.RealtimeInputConfig(
                 automatic_activity_detection=genai_types.AutomaticActivityDetection(
-                    disabled=True,
+                    disabled=False,
+                    start_of_speech_sensitivity=genai_types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    silence_duration_ms=200,  # Ultra-short for fast response
+                    prefix_padding_ms=100,
                 )
             ),
             speech_config=genai_types.SpeechConfig(
                 voice_config=genai_types.VoiceConfig(
                     prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                        voice_name="Charon"   # Professional, warm voice
+                        voice_name="Charon"
                     )
                 )
             ),
@@ -240,6 +240,7 @@ class LiveInterviewer:
         Push raw PCM audio bytes from the browser mic into Flash Live.
         Uses send_realtime_input — the correct SDK method for streaming audio.
         No audio is stored — bytes are forwarded directly (rules.md §6).
+        Automatic VAD handles turn detection — no manual signaling needed.
         """
         if not self._is_connected or self._live_session is None:
             return
@@ -248,30 +249,6 @@ class LiveInterviewer:
                 data=pcm_bytes,
                 mime_type=f"audio/pcm;rate={AUDIO_SAMPLE_RATE}",
             )
-        )
-
-    async def signal_activity_start(self) -> None:
-        """
-        Signals to Gemini Live that the student has started speaking.
-        Must be sent before audio when VAD is disabled (manual mode).
-        send_realtime_input only accepts one argument per call.
-        """
-        if not self._is_connected or self._live_session is None:
-            return
-        await self._live_session.send_realtime_input(
-            activity_start=genai_types.ActivityStart()
-        )
-
-    async def signal_activity_end(self) -> None:
-        """
-        Signals to Gemini Live that the student has finished speaking.
-        Called when the frontend sends TURN_COMPLETE (VAD disabled — manual mode).
-        send_realtime_input only accepts one argument per call.
-        """
-        if not self._is_connected or self._live_session is None:
-            return
-        await self._live_session.send_realtime_input(
-            activity_end=genai_types.ActivityEnd()
         )
 
     async def stream_response(self) -> AsyncIterator[bytes]:

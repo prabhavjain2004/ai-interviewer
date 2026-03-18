@@ -117,6 +117,7 @@
     }
     .pill-idle    { background: #1e2130; color: var(--muted); }
     .pill-live    { background: #14291a; color: var(--green); }
+    .pill-listening { background: #1a2a3a; color: #60a5fa; }
     .pill-warmup  { background: #1e2130; color: #818cf8; }
     .pill-deep    { background: #1e2130; color: var(--yellow); }
     .pill-stress  { background: #2a1a1a; color: var(--red); }
@@ -358,18 +359,15 @@
     </div>
 
     <div class="controls">
-      <button class="btn btn-primary" id="btn-mic" disabled>
-        🎙️ Mic On
-      </button>
-      <button class="btn btn-ghost" id="btn-done" disabled style="display:none;">
-        ✅ Done Speaking
-      </button>
       <button class="btn btn-danger" id="btn-end" disabled>
         ⏹ End Interview
       </button>
       <button class="btn btn-ghost" id="btn-report" style="display:none;" onclick="openReportModal()">
         📋 View Report
       </button>
+    </div>
+    <div style="margin-top:12px;font-size:0.75rem;color:var(--muted);text-align:center;" id="listening-hint">
+      Mic is always listening — just speak naturally
     </div>
   </div>
 
@@ -558,11 +556,10 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     setStatus('warm_up', 0);
-    document.getElementById('btn-mic').disabled = false;
     document.getElementById('btn-end').disabled = false;
-    // Auto-start mic so it's ready — starts muted, user presses "Your Turn" to speak
+    // Auto-start mic — continuous listening, natural conversation
     startMic();
-    toast('Connected — AI will greet you first…');
+    toast('Connected — AI will greet you…');
   };
 
   ws.onmessage = async (event) => {
@@ -587,7 +584,6 @@ function connectWebSocket() {
     setStatus('finished');
     stopMic();
     flatVisualiser();
-    document.getElementById('btn-mic').disabled = true;
     document.getElementById('btn-end').disabled = true;
     toast('Interview ended. Fetching report…');
     pollReport();
@@ -597,50 +593,16 @@ function connectWebSocket() {
 }
 
 // ---------------------------------------------------------------------------
-// Mic — toggle mute/unmute (mic stream stays open, just gate the WS send)
+// Mic — auto-starts, always listening (muted only when AI speaks)
 // ---------------------------------------------------------------------------
-let micMuted = false;
-let isSpeaking = false;  // true while user is actively speaking (between mic-on and done)
-const btnMic  = document.getElementById('btn-mic');
-const btnDone = document.getElementById('btn-done');
-
-btnMic.addEventListener('click', () => {
-  if (!micActive) { startMic(); return; }
-  if (aiSpeaking) return;  // can't start speaking while AI is speaking
-  if (!isSpeaking) {
-    // Start speaking turn
-    isSpeaking = true;
-    micMuted = false;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send('ACTIVITY_START');
-    }
-    btnMic.innerHTML = '🎙️ Speaking…';
-    btnMic.className = 'btn btn-danger';
-    btnDone.style.display = 'inline-flex';
-    btnDone.disabled = false;
-  }
-});
-
-btnDone.addEventListener('click', () => {
-  if (!isSpeaking) return;
-  // Signal turn complete to server
-  isSpeaking = false;
-  micMuted = true;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send('TURN_COMPLETE');
-  }
-  btnMic.innerHTML = '🎙️ Your Turn';
-  btnMic.className = 'btn btn-primary';
-  btnDone.style.display = 'none';
-  btnDone.disabled = true;
-});
+const btnEnd = document.getElementById('btn-end');
 
 async function startMic() {
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: true,  // Browser handles fan/AC noise
         autoGainControl: true,
         sampleRate: 16000,
       },
@@ -662,21 +624,21 @@ async function startMic() {
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
     function drawFrame() {
       animFrame = requestAnimationFrame(drawFrame);
-      // Only animate bars while user is actively in their speaking turn
-      if (!isSpeaking || micMuted || aiSpeaking) {
+      // Flatten bars when AI is speaking, animate when listening
+      if (aiSpeaking) {
         flatVisualiser();
-        return;
+      } else {
+        analyser.getByteFrequencyData(dataArray);
+        animateVisualiser(dataArray);
       }
-      analyser.getByteFrequencyData(dataArray);
-      animateVisualiser(dataArray);
     }
     drawFrame();
 
     processor.onaudioprocess = (e) => {
-      // Only send audio when user is actively in their speaking turn
-      if (!ws || ws.readyState !== WebSocket.OPEN || micMuted || aiSpeaking || !isSpeaking) return;
+      // Only send audio when not AI speaking — prevents echo
+      if (!ws || ws.readyState !== WebSocket.OPEN || aiSpeaking) return;
       const float32 = e.inputBuffer.getChannelData(0);
-      // Convert Float32 PCM → Int16 PCM
+      // Convert Float32 PCM → Int16 PCM (no noise gate — Gemini's VAD handles it)
       const int16 = new Int16Array(float32.length);
       for (let i = 0; i < float32.length; i++) {
         int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
@@ -685,11 +647,7 @@ async function startMic() {
     };
 
     micActive = true;
-    micMuted = true;   // start muted — user presses mic button to begin speaking
-    isSpeaking = false;
-    btnMic.innerHTML = '🎙️ Your Turn';
-    btnMic.className = 'btn btn-primary';
-    btnMic.disabled = false;
+    toast('Mic active — speak naturally');
   } catch (err) {
     toast('Mic error: ' + err.message);
   }
@@ -704,13 +662,7 @@ function stopMic() {
   clearTimeout(aiSpeakingTimer);
   flatVisualiser();
   micActive = false;
-  micMuted = true;
-  isSpeaking = false;
   aiSpeaking = false;
-  btnMic.innerHTML = '🎙️ Mic On';
-  btnMic.className = 'btn btn-primary';
-  btnDone.style.display = 'none';
-  btnDone.disabled = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -734,43 +686,16 @@ function getPlayCtx() {
 }
 
 function onAiChunkReceived() {
-  // Mark AI as speaking — disable mic controls
+  // Mark AI as speaking — stop sending mic audio to prevent echo
   if (!aiSpeaking) {
     aiSpeaking = true;
-    // If user was mid-turn, cancel it (AI interrupted or responded)
-    if (isSpeaking) {
-      isSpeaking = false;
-      btnDone.style.display = 'none';
-      btnDone.disabled = true;
-    }
-    micMuted = true;
-    updateMicButton();
   }
   // Reset the silence debounce on every chunk
   clearTimeout(aiSpeakingTimer);
   aiSpeakingTimer = setTimeout(() => {
-    // No new chunk for 600ms — AI has finished speaking
+    // No new chunk for 600ms — AI has finished speaking, resume listening
     aiSpeaking = false;
-    micMuted = true;  // stay muted — user must press "Your Turn" to speak
-    updateMicButton();
   }, 600);
-}
-
-function updateMicButton() {
-  if (!micActive) return;
-  if (aiSpeaking) {
-    btnMic.innerHTML = '🔊 AI Speaking…';
-    btnMic.className = 'btn btn-ghost';
-    btnMic.disabled = true;
-  } else if (isSpeaking) {
-    btnMic.innerHTML = '🎙️ Speaking…';
-    btnMic.className = 'btn btn-danger';
-    btnMic.disabled = false;
-  } else {
-    btnMic.innerHTML = '🎙️ Your Turn';
-    btnMic.className = 'btn btn-primary';
-    btnMic.disabled = false;
-  }
 }
 
 function scheduleChunk(arrayBuffer) {
@@ -807,7 +732,6 @@ document.getElementById('btn-end').addEventListener('click', async () => {
   ws.send('END_INTERVIEW');
   stopMic();
   document.getElementById('btn-end').disabled = true;
-  document.getElementById('btn-mic').disabled = true;
 
   // Also call DELETE /session to trigger coach report
   try {

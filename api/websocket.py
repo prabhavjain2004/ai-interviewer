@@ -150,23 +150,6 @@ async def interview_websocket(
                         ended_cleanly[0] = True
                         logger.info("END_INTERVIEW received | session=%s", session_id)
                         return
-                    elif text == "ACTIVITY_START":
-                        # Frontend signals user started speaking
-                        await session.live_interviewer.signal_activity_start()
-                    elif text == "TURN_COMPLETE":
-                        # Frontend signals student finished speaking — tell Gemini Live
-                        await session.live_interviewer.signal_activity_end()
-                        turn_counter[0] += 1
-                        if turn_counter[0] % SYNC_EVERY_N_TURNS == 0:
-                            asyncio.create_task(_persist_state())
-                            try:
-                                await websocket.send_text(json.dumps({
-                                    "type": "status",
-                                    "phase": state.get("status", "warm_up"),
-                                    "turn_count": state.get("turn_count", 0),
-                                }))
-                            except Exception:
-                                pass
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected | session=%s", session_id)
         except Exception as exc:

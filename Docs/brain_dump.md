@@ -2,19 +2,6 @@
 
 ## Project: AI Technical Interviewer & Mentor (Ribbon.ai Killer)
 
-## 2026-03-18 Lead AI Engineer Audit Snapshot
-
-- Objective: Compare implementation against architecture.md, rules.md, structure.md, and hld.md.
-- Scope: Read-only code audit (no code changes), plus maintain this single tracking file.
-- Immediate priority gaps found:
-	- LangGraph is compiled but not truly orchestrating runtime transitions on the hot path.
-	- HLD/architecture says native VAD barge-in is enabled, but code currently runs manual turn signaling with VAD disabled.
-	- Horizontal scaling is constrained by in-process session registry dependency for active websocket sessions.
-	- State contract drifts from strict typed models at graph boundary (dict-heavy state payloads).
-	- Persistence safety risk: Redis outage fallback path depends on fakeredis but dependency is not pinned in requirements.
-
----
-
 ---
 
 ## STATUS TRACKER
