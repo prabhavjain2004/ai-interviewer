@@ -2,16 +2,21 @@
 
 ## Cost Per Interview (15 minutes, 7 questions)
 
-### Actual Cost to You (with Gemini 1.5 Flash):
-- **Optimized: $0.61 per interview** (₹51) ⭐ 70% CHEAPER!
-- **Unoptimized: $1.15 per interview** (₹95)
-- **Old 2.5 Flash cost: $2.02** (₹168)
+### 🎉 AMAZING NEWS: Gemini 2.0 Flash Experimental is FREE!
+
+### Actual Cost to You (with Gemini 2.0 Flash Exp):
+- **Interview (Live Audio): $0.00** (FREE during preview!)
+- **Resume Parsing: $0.000356**
+- **Coach Report: $0.024375**
+- **Auditor: $0.000289**
+- **Infrastructure: $0.012765**
+- **TOTAL: $0.04 per interview** (₹3.32) ⭐
 
 ### Cost Breakdown:
-- Gemini 1.5 Flash Live (Interview): $0.598 (98% of cost)
-- Gemini Pro (Report): $0.009
-- Infrastructure: $0.002
-- **Total: $0.61** (94% profit margin at $9.99 pricing!)
+- Gemini 2.0 Flash Exp (Interview): $0.00 (99% of original cost - now FREE!)
+- Gemini 2.5 Flash (Resume Parsing): $0.000356
+- Gemini 2.5 Flash (Coach Report): $0.024375
+- Infrastructure: $0.012765
 
 ---
 
@@ -21,18 +26,18 @@
 
 | Tier | Price (USD) | Price (INR) | Your Profit | Margin |
 |------|-------------|-------------|-------------|--------|
-| **Single Interview** | $9.99 | ₹829 | $9.38 | 94% |
-| **Student (with .edu)** | $4.99 | ₹414 | $4.38 | 88% |
-| **5-Pack** | $39.99 ($8 each) | ₹3,319 | $36.94 | 92% |
-| **10-Pack** | $69.99 ($7 each) | ₹5,809 | $63.89 | 91% |
+| **Single Interview** | $9.99 | ₹829 | $9.95 | 99.6% |
+| **Student (with .edu)** | $4.99 | ₹414 | $4.95 | 99.2% |
+| **5-Pack** | $39.99 ($8 each) | ₹3,319 | $39.79 | 99.5% |
+| **10-Pack** | $69.99 ($7 each) | ₹5,809 | $69.59 | 99.4% |
 
 ### Why This Works:
-✅ **AMAZING margin (94%)** with 1.5 Flash!  
+✅ **INSANE margin (99.6%)** with FREE 2.0 Flash Exp!  
 ✅ No commitment required  
 ✅ Simple to understand  
 ✅ Competitive pricing  
 ✅ Scales beautifully  
-✅ 70% cheaper than 2.5 Flash!  
+✅ Interview audio is FREE during preview!  
 
 ---
 

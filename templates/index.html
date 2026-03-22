@@ -421,9 +421,9 @@ const BARS = 28;
 // Silent VAD config/state
 const USE_MANUAL_TURN_COMPLETE = true; // Frontend silence detection explicitly ends turns
 const SILENCE_THRESHOLD = 0.005;  // RMS volume threshold — ADJUST THIS based on console logs (see onaudioprocess)
-const SILENCE_DURATION = 2000;    // ms of silence before triggering turn complete (increased to 2s)
-const MIN_SPEECH_DURATION = 800;  // ms of speech required before allowing turn complete (prevents false triggers)
-const WAITING_FOR_AI_TIMEOUT = 10000; // fallback in case response signaling is delayed
+const SILENCE_DURATION = 2500;    // ms of silence before triggering turn complete (increased to 2.5s for safety)
+const MIN_SPEECH_DURATION = 1500;  // ms of speech required before allowing turn complete (increased to 1.5s to prevent false triggers)
+const WAITING_FOR_AI_TIMEOUT = 15000; // fallback in case response signaling is delayed (increased to 15s)
 let lastSpeechTime = Date.now();
 let lastTurnCompleteSentAt = 0;
 let hasSpokenThisTurn = false;
@@ -658,8 +658,8 @@ async function startMic() {
     drawFrame();
 
     processor.onaudioprocess = (e) => {
-      // Only send audio when socket is open and AI is not currently speaking.
-      if (!ws || ws.readyState !== WebSocket.OPEN || aiSpeaking) return;
+      // Only process audio when socket is open and AI is not currently speaking
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
       const float32 = e.inputBuffer.getChannelData(0);
 
@@ -677,6 +677,14 @@ async function startMic() {
       // Set SILENCE_THRESHOLD slightly higher than this value (e.g., if fan is 0.020, set to 0.025)
       console.log("Current Volume (RMS):", rms.toFixed(4));
 
+      // CRITICAL: Skip VAD logic entirely when AI is speaking
+      if (aiSpeaking) {
+        // Reset VAD state when AI is speaking to prevent false triggers
+        hasSpokenThisTurn = false;
+        totalSpeechDuration = 0;
+        return;  // Don't send audio or process VAD
+      }
+
       if (USE_MANUAL_TURN_COMPLETE) {
         if (waitingForAi && now - lastTurnCompleteSentAt > WAITING_FOR_AI_TIMEOUT) {
           waitingForAi = false;
@@ -690,12 +698,16 @@ async function startMic() {
               // First speech detected in this turn
               hasSpokenThisTurn = true;
               totalSpeechDuration = 0;
+              console.log('Silent VAD: Speech started');
             }
             // Accumulate speech duration (approximate based on buffer size)
             totalSpeechDuration += (float32.length / 16000) * 1000;  // Convert samples to ms
             lastSpeechTime = now;
           } else if (hasSpokenThisTurn && now - lastSpeechTime >= SILENCE_DURATION) {
             // Silence detected after speech
+            const speechDuration = Math.round(totalSpeechDuration);  // Save before reset
+            console.log('Silent VAD: Silence detected. Speech duration:', speechDuration, 'ms, Min required:', MIN_SPEECH_DURATION, 'ms');
+            
             // Only send TURN_COMPLETE if user spoke for minimum duration
             if (totalSpeechDuration >= MIN_SPEECH_DURATION) {
               ws.send('TURN_COMPLETE');
@@ -704,12 +716,12 @@ async function startMic() {
               hasSpokenThisTurn = false;
               totalSpeechDuration = 0;
               lastSpeechTime = now;
-              console.log('Silent VAD: TURN_COMPLETE sent after', Math.round(totalSpeechDuration), 'ms of speech');
+              console.log('✅ Silent VAD: TURN_COMPLETE sent after', speechDuration, 'ms of speech');
             } else {
               // False alarm - reset and keep listening
               hasSpokenThisTurn = false;
               totalSpeechDuration = 0;
-              console.log('Silent VAD: Ignoring short speech burst (', Math.round(totalSpeechDuration), 'ms)');
+              console.log('❌ Silent VAD: Ignoring short speech burst (', speechDuration, 'ms < ', MIN_SPEECH_DURATION, 'ms)');
             }
           }
         }

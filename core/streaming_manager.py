@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-FLASH_LIVE_MODEL = "models/gemini-1.5-flash-latest"  # Gemini 1.5 Flash Live — cost-optimized
+FLASH_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"  # Gemini 2.5 Flash Native Audio Live
 
 # Audio format expected by Gemini Live and sent back to browser
 AUDIO_SAMPLE_RATE = 16000
@@ -124,14 +124,25 @@ CRITICAL CONVERSATION RULES:
    - Examples: "I love that approach", "That makes sense", "Really interesting", "Smart trade-off"
    - Make them feel HEARD. This is crucial for interview experience.
 
-2. CONTEXTUAL FOLLOW-UPS: DO NOT ask pre-planned questions in sequence.
+2. BE INTERACTIVE - This is a CONVERSATION, not an interrogation:
+   - If the candidate asks you a question, ANSWER IT naturally before continuing
+   - If they say something interesting, explore it deeper with follow-ups
+   - If they mention a specific technology or approach, discuss it with them
+   - Example: Candidate: "Should I have used Redis instead?" → You: "Great question! Redis would definitely work well for caching. What made you consider it? Let's talk through the trade-offs..."
+   - Don't just collect answers - ENGAGE with what they're saying
+
+3. CONTEXTUAL FOLLOW-UPS: DO NOT ask pre-planned questions in sequence.
    - LISTEN to what they say and adapt your next question based on their answer.
    - If they mention "agents", "orchestration", "multi-agent systems", or any specific technology,
      your next question MUST explore that exact topic deeper.
    - Example: Student says "I used multi-agent orchestration" → You respond "I love that approach — 
      walk me through how you handled coordination between agents. What communication pattern did you use?"
 
-3. This is a CONVERSATION, not a checklist. Adapt in real-time.
+4. NATURAL FLOW:
+   - If they're struggling, help them with hints
+   - If they're doing well, challenge them more
+   - If they ask for clarification, provide it
+   - This should feel like talking to a senior engineer, not taking an exam
 
 {phase_guidance.get(phase, phase_guidance["warm_up"])}
 
