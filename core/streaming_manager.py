@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-FLASH_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"  # Native audio Live — sub-500ms
+FLASH_LIVE_MODEL = "models/gemini-1.5-flash-latest"  # Gemini 1.5 Flash Live — cost-optimized
 
 # Audio format expected by Gemini Live and sent back to browser
 AUDIO_SAMPLE_RATE = 16000
@@ -50,7 +50,7 @@ MIN_TURN_INCREMENT_INTERVAL_SECONDS = 1.5
 # System instruction builder
 # ---------------------------------------------------------------------------
 
-def build_system_instruction(resume_json: dict, phase: str) -> str:
+def build_system_instruction(resume_json: dict, phase: str, turn_count: int = 0) -> str:
     """
     Injects the student's full resume text + structured entities into the Flash Live
     system_instruction. Raw text gives richer context; structured JSON gives precise anchors.
@@ -64,20 +64,51 @@ def build_system_instruction(resume_json: dict, phase: str) -> str:
     structured = {k: v for k, v in resume_json.items() if k != "raw_text"}
     structured_str = json.dumps(structured, indent=2)
 
+    # Progressive difficulty ramping based on turn count
+    difficulty_guidance = ""
+    if phase == "deep_dive":
+        if turn_count <= 3:
+            difficulty_guidance = (
+                "\n\nDIFFICULTY LEVEL: EASY (Turn 1-2 of deep-dive)\n"
+                "Start with straightforward questions about what they built and why. "
+                "Ask about high-level architecture decisions. Keep it accessible. "
+                "Example: 'Walk me through the architecture of [PROJECT] — what were the main components?'"
+            )
+        elif turn_count <= 5:
+            difficulty_guidance = (
+                "\n\nDIFFICULTY LEVEL: MEDIUM (Turn 3-4 of deep-dive)\n"
+                "Now dig deeper into implementation details and trade-offs. "
+                "Ask about specific technical choices and alternatives they considered. "
+                "Example: 'Why did you choose [TECH_X] over [TECH_Y] for that use case? What trade-offs did you evaluate?'"
+            )
+        else:
+            difficulty_guidance = (
+                "\n\nDIFFICULTY LEVEL: CHALLENGING (Turn 5+ of deep-dive)\n"
+                "Push on edge cases, scalability, and failure scenarios. "
+                "Ask about what would break under stress and how they'd fix it. "
+                "Example: 'If [PROJECT] had to handle 10x the load overnight, what would break first and how would you address it?'"
+            )
+
     phase_guidance = {
         "warm_up": (
-            "You are in the WARM-UP phase. Be warm, welcoming, and conversational. "
-            "Ask 2-3 broad questions to build rapport. Generic questions are allowed here."
+            "You are in the WARM-UP phase (2 questions max). Be warm, welcoming, and conversational. "
+            "Ask about their current work and career goals. Keep it light and non-technical. "
+            "NO technical questions yet — just build rapport. "
+            "ACKNOWLEDGMENT RULE: After they answer, validate their response warmly before moving on. "
+            "Examples: 'I love that approach', 'That makes a lot of sense', 'Really interesting direction', "
+            "'That's a solid foundation to build on'. Make them feel heard."
         ),
         "deep_dive": (
-            "You are in the DEEP-DIVE phase. Every question MUST reference a specific entity "
-            "from the student's resume (project name, company, tech stack item). "
-            "Be technically firm but encouraging. Never say 'that's wrong' — ask follow-ups instead."
-        ),
-        "stress_test": (
-            "You are in the STRESS-TEST phase. Push on edge cases, trade-offs, and failure scenarios. "
-            "Every question MUST name a specific resume entity. Increase technical pressure gradually. "
-            "You are a supportive partner — not a judge."
+            "You are in the DEEP-DIVE phase (5 questions max). Now get technical. "
+            "Every question MUST reference a specific entity from their resume (project, company, tech). "
+            "CRITICAL: Your next question MUST be based on what they just said. "
+            "If they mention 'agentic solutions', 'multi-agent orchestration', or any specific technology, "
+            "your follow-up MUST drill into that exact topic. This is a conversation, not a checklist. "
+            "ACKNOWLEDGMENT RULE: After each answer, validate what they said before asking the next question. "
+            "Examples: 'I really like how you approached that', 'That's a smart trade-off', "
+            "'Interesting — I can see why you chose that pattern', 'That shows good architectural thinking'. "
+            "Be encouraging but technically honest. Never say 'that's wrong' — guide them with follow-ups."
+            + difficulty_guidance
         ),
     }
 
@@ -87,6 +118,20 @@ You are NOT a judge. You are a Supportive Partner.
 
 PROHIBITED phrases: "That's wrong", "Incorrect", "You failed to mention."
 REQUIRED approach: Ask follow-up questions that guide the student toward the right answer.
+
+CRITICAL CONVERSATION RULES:
+1. ACKNOWLEDGMENT FIRST: After every student answer, validate what they said before asking next question.
+   - Examples: "I love that approach", "That makes sense", "Really interesting", "Smart trade-off"
+   - Make them feel HEARD. This is crucial for interview experience.
+
+2. CONTEXTUAL FOLLOW-UPS: DO NOT ask pre-planned questions in sequence.
+   - LISTEN to what they say and adapt your next question based on their answer.
+   - If they mention "agents", "orchestration", "multi-agent systems", or any specific technology,
+     your next question MUST explore that exact topic deeper.
+   - Example: Student says "I used multi-agent orchestration" → You respond "I love that approach — 
+     walk me through how you handled coordination between agents. What communication pattern did you use?"
+
+3. This is a CONVERSATION, not a checklist. Adapt in real-time.
 
 {phase_guidance.get(phase, phase_guidance["warm_up"])}
 
@@ -105,6 +150,13 @@ Key anchors to drill into:
 
 Voice Activity Detection is active. The student may interrupt you — stop immediately and listen.
 Keep your responses concise (under 30 seconds when spoken). Ask one question at a time.
+
+CRITICAL WAITING RULE:
+- After asking a question, you MUST wait for the student to finish their complete answer.
+- DO NOT interrupt or ask the next question until you receive a clear turn completion signal.
+- If the student pauses mid-answer, they are likely thinking — give them time.
+- Only proceed to the next question after they have fully completed their response.
+- Be patient. Silence is okay. Let them think and formulate their answer.
 """
 
 
@@ -140,6 +192,7 @@ class LiveInterviewer:
         self.resume_json = resume_json
         self.phase = initial_phase
         self.turn_count = 0
+        self._last_system_instruction_turn = -1  # Track when we last updated instruction
 
         # Callback fired (non-blocking) when a student transcript chunk arrives
         self._on_auditor_trigger = on_auditor_trigger
@@ -170,7 +223,7 @@ class LiveInterviewer:
         """
         self._client = genai.Client(api_key=api_key)
 
-        system_instruction = build_system_instruction(self.resume_json, self.phase)
+        system_instruction = build_system_instruction(self.resume_json, self.phase, self.turn_count)
 
         config = genai_types.LiveConnectConfig(
             response_modalities=["AUDIO"],
@@ -314,6 +367,11 @@ class LiveInterviewer:
                             self.turn_count += 1
                             self._student_spoke_since_last_turn = False
                             self._last_turn_increment_at = now
+                            
+                            # Progressive difficulty: update system instruction every 2 turns in deep_dive
+                            if self.phase == "deep_dive" and self.turn_count - self._last_system_instruction_turn >= 2:
+                                await self._update_difficulty_level()
+                            
                             # Emit a non-audio event so callers can flush metadata and persist state
                             # even when Gemini completes a turn without audio bytes.
                             yield None
@@ -343,17 +401,17 @@ class LiveInterviewer:
             activity_end=genai_types.ActivityEnd()
         )
 
-        # Step 2: manual turn trigger — empty user turn with turn_complete=True
-        # This is required for response generation when automatic VAD is disabled.
+        # Step 2: FORCE GENERATION with explicit nudge
+        # Use a clearer 'user' role turn with explicit instruction to respond now.
         await self._live_session.send_client_content(
             turns=genai_types.Content(
                 role="user",
-                parts=[genai_types.Part(text="")],
+                parts=[genai_types.Part(text="[Candidate finished speaking. Please respond now.]")],
             ),
             turn_complete=True,
         )
 
-        logger.debug("Manual turn completion signaled | session_id=%s", self.session_id)
+        logger.debug("Manual turn completion signaled with explicit nudge | session_id=%s", self.session_id)
 
     # ------------------------------------------------------------------
     # Phase update (called by orchestrator when LangGraph transitions phase)
@@ -367,7 +425,8 @@ class LiveInterviewer:
         if not self._is_connected or self._live_session is None:
             return
         self.phase = new_phase
-        new_instruction = build_system_instruction(self.resume_json, new_phase)
+        self._last_system_instruction_turn = self.turn_count
+        new_instruction = build_system_instruction(self.resume_json, new_phase, self.turn_count)
         # Inject phase change as a system context note
         await self._live_session.send_client_content(
             turns=genai_types.Content(
@@ -381,6 +440,31 @@ class LiveInterviewer:
         )
         logger.info("Phase updated | session_id=%s | new_phase=%s",
                     self.session_id, new_phase)
+
+    async def _update_difficulty_level(self) -> None:
+        """
+        Updates system instruction with new difficulty level during deep_dive phase.
+        Called every 2 turns to progressively increase question difficulty.
+        """
+        if not self._is_connected or self._live_session is None:
+            return
+        self._last_system_instruction_turn = self.turn_count
+        new_instruction = build_system_instruction(self.resume_json, self.phase, self.turn_count)
+        
+        difficulty_label = "EASY" if self.turn_count <= 3 else "MEDIUM" if self.turn_count <= 5 else "CHALLENGING"
+        
+        await self._live_session.send_client_content(
+            turns=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text=(
+                    f"[SYSTEM: Difficulty level now {difficulty_label}. "
+                    f"Adjust question complexity accordingly while maintaining conversational flow.]"
+                ))],
+            ),
+            turn_complete=False,
+        )
+        logger.info("Difficulty updated | session_id=%s | turn=%d | level=%s",
+                    self.session_id, self.turn_count, difficulty_label)
 
     # ------------------------------------------------------------------
     # Internal helpers

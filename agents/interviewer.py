@@ -26,13 +26,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Phase transition thresholds (from hld.md §7)
+# Phase transition thresholds — SIMPLIFIED to 7-8 questions max
 # ---------------------------------------------------------------------------
 
 PHASE_THRESHOLDS: dict[str, int] = {
-    "warm_up": 3,       # after 3 student turns → deep_dive
-    "deep_dive": 8,     # after 5 more turns (cumulative 8) → stress_test
-    "stress_test": 11,  # after 3 more turns (cumulative 11) → finished
+    "warm_up": 2,       # after 2 student turns → deep_dive (quick intro)
+    "deep_dive": 7,     # after 5 more turns (cumulative 7) → finished
+    "stress_test": 999, # stress_test phase removed — go straight to finished
 }
 
 
@@ -43,7 +43,8 @@ PHASE_THRESHOLDS: dict[str, int] = {
 def resolve_next_phase(current_status: str, turn_count: int) -> str:
     """
     Determines the next interview phase based on turn count.
-    Called by the LangGraph conditional edge in orchestrator.py.
+    SIMPLIFIED: warm_up (2 turns) → deep_dive (5 turns) → finished
+    Total: 7 questions max for a ~15 minute interview.
 
     Returns the same phase if threshold not yet reached.
     """
@@ -51,8 +52,6 @@ def resolve_next_phase(current_status: str, turn_count: int) -> str:
         case "warm_up" if turn_count >= PHASE_THRESHOLDS["warm_up"]:
             return "deep_dive"
         case "deep_dive" if turn_count >= PHASE_THRESHOLDS["deep_dive"]:
-            return "stress_test"
-        case "stress_test" if turn_count >= PHASE_THRESHOLDS["stress_test"]:
             return "finished"
         case _:
             return current_status

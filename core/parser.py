@@ -27,7 +27,7 @@ from core.state import ProjectEntity, ResumeProfile, RoleEntity
 
 logger = logging.getLogger(__name__)
 
-PRO_MODEL = "models/gemini-2.5-pro"
+FLASH_MODEL = "models/gemini-2.5-flash"
 
 # ---------------------------------------------------------------------------
 # Extraction prompt — structured JSON output enforced via response_schema
@@ -145,7 +145,7 @@ async def parse_resume(
     prompt = EXTRACTION_PROMPT.format(resume_text=resume_text)
 
     response = await client.aio.models.generate_content(
-        model=PRO_MODEL,
+        model=FLASH_MODEL,
         contents=prompt,
         config=genai_types.GenerateContentConfig(
             response_mime_type="application/json",

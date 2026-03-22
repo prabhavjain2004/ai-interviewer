@@ -53,9 +53,9 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8000
     session_ttl_seconds: int = 86400
-    max_turns_warm_up: int = 3
-    max_turns_deep_dive: int = 5
-    max_turns_stress_test: int = 3
+    max_turns_warm_up: int = 2      # Simplified: 2 questions for intro
+    max_turns_deep_dive: int = 7    # Total 7 questions max (~15 min interview)
+    max_turns_stress_test: int = 999  # Stress test phase removed
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

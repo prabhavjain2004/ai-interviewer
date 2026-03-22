@@ -35,7 +35,7 @@ from core.state import (
 
 logger = logging.getLogger(__name__)
 
-PRO_MODEL = "models/gemini-2.5-pro"
+FLASH_MODEL = "models/gemini-2.5-flash"
 
 # ---------------------------------------------------------------------------
 # Wellfound categories — must match FeedbackItem.category Literal exactly
@@ -210,7 +210,7 @@ async def generate_coach_report(
     prompt = _build_coach_prompt(state)
 
     response = await client.aio.models.generate_content(
-        model=PRO_MODEL,
+        model=FLASH_MODEL,
         contents=prompt,
         config=genai_types.GenerateContentConfig(
             response_mime_type="application/json",
