@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, AsyncIterator, Callable
 
@@ -40,6 +41,9 @@ FLASH_LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"  # Native audio
 # Audio format expected by Gemini Live and sent back to browser
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_CHANNELS = 1
+
+# Guard against duplicate/native VAD burst completions being counted as separate turns.
+MIN_TURN_INCREMENT_INTERVAL_SECONDS = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +155,8 @@ class LiveInterviewer:
         self._live_cm = None  # holds the async context manager open
         self._is_connected = False
         self._transcript: list[dict] = []
+        self._student_spoke_since_last_turn = False
+        self._last_turn_increment_at = 0.0
 
     # ------------------------------------------------------------------
     # Connection management
@@ -174,16 +180,11 @@ class LiveInterviewer:
             output_audio_transcription=genai_types.AudioTranscriptionConfig(),
             # Disable thinking — set directly on LiveConnectConfig (not nested in GenerationConfig)
             thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-            # Automatic VAD enabled — aggressive tuning for fast response
-            # 200ms silence = responds in <1s after you stop speaking
-            # Browser's native noise suppression handles background noise
+            # Native Gemini VAD mode (Docs/architecture.md):
+            # Disabled: frontend sends explicit TURN_COMPLETE after silence.
             realtime_input_config=genai_types.RealtimeInputConfig(
                 automatic_activity_detection=genai_types.AutomaticActivityDetection(
-                    disabled=False,
-                    start_of_speech_sensitivity=genai_types.StartSensitivity.START_SENSITIVITY_HIGH,
-                    end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    silence_duration_ms=200,  # Ultra-short for fast response
-                    prefix_padding_ms=100,
+                    disabled=True,
                 )
             ),
             speech_config=genai_types.SpeechConfig(
@@ -240,7 +241,7 @@ class LiveInterviewer:
         Push raw PCM audio bytes from the browser mic into Flash Live.
         Uses send_realtime_input — the correct SDK method for streaming audio.
         No audio is stored — bytes are forwarded directly (rules.md §6).
-        Automatic VAD handles turn detection — no manual signaling needed.
+        In manual VAD mode, frontend silence detection calls signal_activity_end().
         """
         if not self._is_connected or self._live_session is None:
             return
@@ -251,7 +252,7 @@ class LiveInterviewer:
             )
         )
 
-    async def stream_response(self) -> AsyncIterator[bytes]:
+    async def stream_response(self) -> AsyncIterator[bytes | None]:
         """
         Async generator that yields AI audio response chunks back to the browser.
         Also captures transcript text when available and fires the Auditor.
@@ -283,17 +284,19 @@ class LiveInterviewer:
                                     # use output_transcription for the actual spoken words
                                     pass
 
-                        # AI spoken words via output transcription
+                        # AI spoken words via output transcription (only final chunks)
                         if content.output_transcription and content.output_transcription.text:
                             text = content.output_transcription.text.strip()
-                            if text and content.output_transcription.finished:
+                            if text and getattr(content.output_transcription, "finished", False):
                                 self._append_turn("interviewer", text)
                                 if self._on_transcript_event:
                                     self._on_transcript_event("interviewer", text)
 
                         if content.input_transcription:
                             student_text = content.input_transcription.text
-                            if student_text and student_text.strip():
+                            is_finished = bool(getattr(content.input_transcription, "finished", False))
+                            if student_text and student_text.strip() and is_finished:
+                                self._student_spoke_since_last_turn = True
                                 self._append_turn("student", student_text)
                                 if self._on_transcript_event:
                                     self._on_transcript_event("student", student_text)
@@ -304,8 +307,16 @@ class LiveInterviewer:
                                         name=f"rag-{self.session_id}-turn-{self.turn_count}",
                                     )
 
-                        if content.turn_complete:
+                        if content.turn_complete and self._student_spoke_since_last_turn:
+                            now = time.monotonic()
+                            if now - self._last_turn_increment_at < MIN_TURN_INCREMENT_INTERVAL_SECONDS:
+                                continue
                             self.turn_count += 1
+                            self._student_spoke_since_last_turn = False
+                            self._last_turn_increment_at = now
+                            # Emit a non-audio event so callers can flush metadata and persist state
+                            # even when Gemini completes a turn without audio bytes.
+                            yield None
 
             except Exception as exc:
                 # Session closed or network error — exit the loop cleanly
@@ -313,6 +324,36 @@ class LiveInterviewer:
                     logger.warning("stream_response loop error | session=%s | error=%s",
                                    self.session_id, exc)
                 break
+
+    # ------------------------------------------------------------------
+    # Manual turn completion (called when frontend detects silence)
+    # ------------------------------------------------------------------
+
+    async def signal_activity_end(self) -> None:
+        """
+        Signals end of student speech activity in manual VAD mode.
+        Called when frontend detects silence via noise gate.
+        Forces the model to generate a response immediately.
+        """
+        if not self._is_connected or self._live_session is None:
+            return
+
+        # Step 1: explicit activity end event
+        await self._live_session.send_realtime_input(
+            activity_end=genai_types.ActivityEnd()
+        )
+
+        # Step 2: manual turn trigger — empty user turn with turn_complete=True
+        # This is required for response generation when automatic VAD is disabled.
+        await self._live_session.send_client_content(
+            turns=genai_types.Content(
+                role="user",
+                parts=[genai_types.Part(text="")],
+            ),
+            turn_complete=True,
+        )
+
+        logger.debug("Manual turn completion signaled | session_id=%s", self.session_id)
 
     # ------------------------------------------------------------------
     # Phase update (called by orchestrator when LangGraph transitions phase)

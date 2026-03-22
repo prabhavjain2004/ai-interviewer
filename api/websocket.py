@@ -142,14 +142,21 @@ async def interview_websocket(
         try:
             while True:
                 message = await websocket.receive()
-                if "bytes" in message:
-                    await session.live_interviewer.send_audio(message["bytes"])
-                elif "text" in message:
-                    text = message["text"].strip()
-                    if text == "END_INTERVIEW":
+                msg_bytes = message.get("bytes")
+                msg_text = message.get("text")
+
+                if msg_bytes is not None:
+                    await session.live_interviewer.send_audio(msg_bytes)
+                elif msg_text is not None:
+                    text = msg_text.strip()
+                    control = text.upper()
+                    if control == "END_INTERVIEW":
                         ended_cleanly[0] = True
                         logger.info("END_INTERVIEW received | session=%s", session_id)
                         return
+                    elif control == "TURN_COMPLETE":
+                        await session.live_interviewer.signal_activity_end()
+                        logger.debug("TURN_COMPLETE handled (manual VAD mode) | session=%s", session_id)
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected | session=%s", session_id)
         except Exception as exc:
@@ -159,15 +166,32 @@ async def interview_websocket(
     # Task B: Flash Live → browser (audio + metadata)
     # ------------------------------------------------------------------
     async def send_task() -> None:
+        last_synced_turn = state.get("turn_count", 0)
         try:
-            async for audio_chunk in session.live_interviewer.stream_response():
-                # Send AI audio bytes to browser
-                await websocket.send_bytes(audio_chunk)
+            async for event in session.live_interviewer.stream_response():
+                # Send AI audio bytes to browser (event may be None on non-audio turn complete)
+                if event:
+                    await websocket.send_bytes(event)
 
                 # Drain and push real-time auditor metadata (heatmap data)
                 for meta in session.drain_ws_metadata():
                     try:
                         await websocket.send_text(json.dumps(meta))
+                    except Exception:
+                        pass
+
+                # Persist and notify status whenever a full turn completes,
+                # even if that turn produced no audio bytes.
+                current_turn = session.live_interviewer.turn_count
+                if current_turn != last_synced_turn:
+                    last_synced_turn = current_turn
+                    await _persist_state()
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "status",
+                            "phase": state.get("status", "warm_up"),
+                            "turn_count": state.get("turn_count", current_turn),
+                        }))
                     except Exception:
                         pass
 

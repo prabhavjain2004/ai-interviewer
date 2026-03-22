@@ -418,6 +418,16 @@ let analyser = null;
 let animFrame = null;
 const BARS = 28;
 
+// Silent VAD config/state
+const USE_MANUAL_TURN_COMPLETE = true; // Frontend silence detection explicitly ends turns
+const SILENCE_THRESHOLD = 0.015;  // RMS volume threshold (tuned for fan noise)
+const SILENCE_DURATION = 1800;    // ms of silence before triggering turn complete
+const WAITING_FOR_AI_TIMEOUT = 10000; // fallback in case response signaling is delayed
+let lastSpeechTime = Date.now();
+let lastTurnCompleteSentAt = 0;
+let hasSpokenThisTurn = false;
+let waitingForAi = false;
+
 // ---------------------------------------------------------------------------
 // Visualiser
 // ---------------------------------------------------------------------------
@@ -570,8 +580,16 @@ function connectWebSocket() {
     } else if (typeof event.data === 'string') {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'transcript') appendTranscript(msg.speaker, msg.text);
-        if (msg.type === 'status')     setStatus(msg.phase, msg.turn_count);
+        if (msg.type === 'transcript') {
+          appendTranscript(msg.speaker, msg.text);
+          if (msg.speaker === 'interviewer') {
+            waitingForAi = false;
+          }
+        }
+        if (msg.type === 'status') {
+          setStatus(msg.phase, msg.turn_count);
+          waitingForAi = false;
+        }
         if (msg.type === 'auditor')    appendHeatmapRow(msg);
         if (msg.type === 'error')      toast('⚠ ' + msg.message);
       } catch (_) {
@@ -594,6 +612,7 @@ function connectWebSocket() {
 
 // ---------------------------------------------------------------------------
 // Mic — auto-starts, always listening (muted only when AI speaks)
+// Frontend Silent VAD — noise gate with automatic TURN_COMPLETE signaling
 // ---------------------------------------------------------------------------
 const btnEnd = document.getElementById('btn-end');
 
@@ -611,7 +630,7 @@ async function startMic() {
     audioContext = new AudioContext({ sampleRate: 16000 });
     const source = audioContext.createMediaStreamSource(mediaStream);
 
-    // Analyser for visualiser
+    // Analyser for visualiser AND silent VAD
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 256;
     source.connect(analyser);
@@ -622,8 +641,10 @@ async function startMic() {
     processor.connect(audioContext.destination);
 
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
     function drawFrame() {
       animFrame = requestAnimationFrame(drawFrame);
+
       // Flatten bars when AI is speaking, animate when listening
       if (aiSpeaking) {
         flatVisualiser();
@@ -635,19 +656,52 @@ async function startMic() {
     drawFrame();
 
     processor.onaudioprocess = (e) => {
-      // Only send audio when not AI speaking — prevents echo
+      // Only send audio when socket is open and AI is not currently speaking.
       if (!ws || ws.readyState !== WebSocket.OPEN || aiSpeaking) return;
+
       const float32 = e.inputBuffer.getChannelData(0);
-      // Convert Float32 PCM → Int16 PCM (no noise gate — Gemini's VAD handles it)
+
+      // Silent VAD in audio callback: compute RMS from current mic frame.
+      let sum = 0;
+      for (let i = 0; i < float32.length; i++) {
+        const sample = float32[i];
+        sum += sample * sample;
+      }
+      const rms = Math.sqrt(sum / float32.length);
+      const now = Date.now();
+
+      if (USE_MANUAL_TURN_COMPLETE) {
+        if (waitingForAi && now - lastTurnCompleteSentAt > WAITING_FOR_AI_TIMEOUT) {
+          waitingForAi = false;
+        }
+
+        if (!waitingForAi) {
+          if (rms > SILENCE_THRESHOLD) {
+            lastSpeechTime = now;
+            hasSpokenThisTurn = true;
+          } else if (hasSpokenThisTurn && now - lastSpeechTime >= SILENCE_DURATION) {
+            ws.send('TURN_COMPLETE');
+            lastTurnCompleteSentAt = now;
+            waitingForAi = true;
+            hasSpokenThisTurn = false;
+            lastSpeechTime = now;
+            console.log('Silent VAD: TURN_COMPLETE sent');
+          }
+        }
+      }
+
+      // Convert Float32 PCM → Int16 PCM
       const int16 = new Int16Array(float32.length);
       for (let i = 0; i < float32.length; i++) {
         int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
       }
+      // Don't stream more mic frames while waiting for a manual TURN_COMPLETE cycle.
+      if (USE_MANUAL_TURN_COMPLETE && waitingForAi) return;
       ws.send(int16.buffer);
     };
 
     micActive = true;
-    toast('Mic active — speak naturally');
+    toast('Mic active — auto end-of-answer detection enabled');
   } catch (err) {
     toast('Mic error: ' + err.message);
   }
@@ -660,6 +714,10 @@ function stopMic() {
   if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   if (animFrame)    { cancelAnimationFrame(animFrame); animFrame = null; }
   clearTimeout(aiSpeakingTimer);
+  hasSpokenThisTurn = false;
+  waitingForAi = false;
+  lastTurnCompleteSentAt = 0;
+  lastSpeechTime = Date.now();
   flatVisualiser();
   micActive = false;
   aiSpeaking = false;
@@ -689,6 +747,7 @@ function onAiChunkReceived() {
   // Mark AI as speaking — stop sending mic audio to prevent echo
   if (!aiSpeaking) {
     aiSpeaking = true;
+    waitingForAi = false; // AI has started speaking, clear wait state
   }
   // Reset the silence debounce on every chunk
   clearTimeout(aiSpeakingTimer);
