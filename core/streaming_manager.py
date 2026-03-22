@@ -20,15 +20,12 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import AsyncIterator, Callable
 
 from google import genai
 from google.genai import types as genai_types
 
 from core.state import ConversationTurn, InterviewState
-
-if TYPE_CHECKING:
-    from services.chroma_client import ChromaClient
 
 logger = logging.getLogger(__name__)
 
@@ -530,44 +527,6 @@ class LiveInterviewer:
             _safe_auditor_call(self._on_auditor_trigger, student_text, turn_index),
             name=f"auditor-{self.session_id}-turn-{turn_index}",
         )
-
-    async def _inject_rag_context(self, student_text: str) -> None:
-        """
-        Mid-session RAG: queries ChromaDB for resume chunks relevant to what the
-        student just said, then sends a context update to Flash Live so the next
-        question is grounded in the most relevant resume detail.
-
-        Runs as asyncio.create_task() — never blocks the audio path.
-        Active in deep_dive and stress_test phases.
-        """
-        if not self._chroma or not self._is_connected or not self._live_session:
-            return
-        try:
-            chunks = await self._chroma.query_resume(
-                self.session_id, student_text, n_results=2
-            )
-            if not chunks:
-                return
-
-            context_update = (
-                "\n[CONTEXT UPDATE — use this for your next question]\n"
-                + "\n".join(f"- {c}" for c in chunks)
-                + "\n[END CONTEXT UPDATE]\n"
-            )
-            # Send as a user-turn text message so Flash Live incorporates it
-            await self._live_session.send_client_content(
-                turns=genai_types.Content(
-                    role="user",
-                    parts=[genai_types.Part(text=context_update)],
-                ),
-                turn_complete=False,  # Not a real student turn — just context
-            )
-            logger.debug("RAG context injected | session=%s | chunks=%d",
-                         self.session_id, len(chunks))
-        except Exception as exc:
-            # Never propagate — RAG failure must not affect the interview
-            logger.warning("RAG injection failed | session=%s | error=%s",
-                           self.session_id, exc)
 
     async def _inject_student_text(self, text: str) -> None:
         """
