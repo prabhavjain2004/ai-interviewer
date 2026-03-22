@@ -420,7 +420,7 @@ const BARS = 28;
 
 // Silent VAD config/state
 const USE_MANUAL_TURN_COMPLETE = true; // Frontend silence detection explicitly ends turns
-const SILENCE_THRESHOLD = 0.005;  // RMS volume threshold — ADJUST THIS based on console logs (see onaudioprocess)
+const SILENCE_THRESHOLD = 0.030;  // RMS volume threshold — raised to 0.030 to handle fan noise (typical fan: 0.024)
 const SILENCE_DURATION = 2500;    // ms of silence before triggering turn complete (increased to 2.5s for safety)
 const MIN_SPEECH_DURATION = 1500;  // ms of speech required before allowing turn complete (increased to 1.5s to prevent false triggers)
 const WAITING_FOR_AI_TIMEOUT = 15000; // fallback in case response signaling is delayed (increased to 15s)
@@ -829,10 +829,8 @@ document.getElementById('btn-end').addEventListener('click', async () => {
   stopMic();
   document.getElementById('btn-end').disabled = true;
 
-  // Also call DELETE /session to trigger coach report
-  try {
-    await fetch(`/session/${sessionId}`, { method: 'DELETE' });
-  } catch (_) {}
+  // Wait for WebSocket to close and persist transcript before triggering coach
+  // The coach report is now triggered in the websocket.py finally block after Redis write
 });
 
 // ---------------------------------------------------------------------------

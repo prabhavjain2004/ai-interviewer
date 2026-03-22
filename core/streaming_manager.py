@@ -110,6 +110,15 @@ def build_system_instruction(resume_json: dict, phase: str, turn_count: int = 0)
             "Be encouraging but technically honest. Never say 'that's wrong' — guide them with follow-ups."
             + difficulty_guidance
         ),
+        "stress_test": (
+            "You are in the STRESS-TEST phase (3 questions max). Push them on edge cases, scalability, and failure scenarios. "
+            "Ask about what would break under stress and how they'd fix it. Challenge their assumptions. "
+            "Examples: 'What happens if this component fails?', 'How would you handle 10x the load?', "
+            "'What's the worst-case scenario here and how would you mitigate it?' "
+            "ACKNOWLEDGMENT RULE: Still validate their thinking, but probe deeper. "
+            "Examples: 'Interesting approach — what if [edge case]?', 'I see your reasoning — have you considered [alternative]?' "
+            "Be supportive but push them to think critically about robustness and scale."
+        ),
     }
 
     return f"""You are an elite technical interviewer and supportive mentor for university students.
@@ -382,6 +391,9 @@ class LiveInterviewer:
                             # Progressive difficulty: update system instruction every 2 turns in deep_dive
                             if self.phase == "deep_dive" and self.turn_count - self._last_system_instruction_turn >= 2:
                                 await self._update_difficulty_level()
+                            # Also update on stress_test entry
+                            elif self.phase == "stress_test" and self.turn_count - self._last_system_instruction_turn >= 1:
+                                await self._update_difficulty_level()
                             
                             # Emit a non-audio event so callers can flush metadata and persist state
                             # even when Gemini completes a turn without audio bytes.
@@ -412,12 +424,12 @@ class LiveInterviewer:
             activity_end=genai_types.ActivityEnd()
         )
 
-        # Step 2: FORCE GENERATION with explicit nudge
-        # Use a clearer 'user' role turn with explicit instruction to respond now.
+        # Step 2: Signal turn completion without forcing immediate response
+        # Let the system instruction's conversation rules handle whether to respond or wait
         await self._live_session.send_client_content(
             turns=genai_types.Content(
                 role="user",
-                parts=[genai_types.Part(text="[Candidate finished speaking. Please respond now.]")],
+                parts=[genai_types.Part(text="[Student turn complete.]")],
             ),
             turn_complete=True,
         )
@@ -456,13 +468,17 @@ class LiveInterviewer:
         """
         Updates system instruction with new difficulty level during deep_dive phase.
         Called every 2 turns to progressively increase question difficulty.
+        Also called when entering stress_test phase.
         """
         if not self._is_connected or self._live_session is None:
             return
         self._last_system_instruction_turn = self.turn_count
         new_instruction = build_system_instruction(self.resume_json, self.phase, self.turn_count)
         
-        difficulty_label = "EASY" if self.turn_count <= 3 else "MEDIUM" if self.turn_count <= 5 else "CHALLENGING"
+        if self.phase == "stress_test":
+            difficulty_label = "STRESS-TEST"
+        else:
+            difficulty_label = "EASY" if self.turn_count <= 3 else "MEDIUM" if self.turn_count <= 5 else "CHALLENGING"
         
         await self._live_session.send_client_content(
             turns=genai_types.Content(
@@ -508,7 +524,7 @@ class LiveInterviewer:
         question is grounded in the most relevant resume detail.
 
         Runs as asyncio.create_task() — never blocks the audio path.
-        Only active in deep_dive and stress_test phases.
+        Active in deep_dive and stress_test phases.
         """
         if not self._chroma or not self._is_connected or not self._live_session:
             return

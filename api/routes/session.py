@@ -146,6 +146,7 @@ async def end_session(
     if session:
         await session.close()
         remove_session(session_id)
+    await chroma.delete_session_collection(session_id)
 
     logger.info("Session ended | session=%s | coach report queued", session_id)
     return {"session_id": session_id, "status": "finished", "message": "Coach report generating."}

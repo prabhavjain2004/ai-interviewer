@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 PHASE_THRESHOLDS: dict[str, int] = {
-    "warm_up": 2,       # after 2 student turns → deep_dive (quick intro)
-    "deep_dive": 7,     # after 5 more turns (cumulative 7) → finished
-    "stress_test": 999, # stress_test phase removed — go straight to finished
+    "warm_up": 2,
+    "deep_dive": 8,
+    "stress_test": 12,
 }
 
 
@@ -43,8 +43,7 @@ PHASE_THRESHOLDS: dict[str, int] = {
 def resolve_next_phase(current_status: str, turn_count: int) -> str:
     """
     Determines the next interview phase based on turn count.
-    SIMPLIFIED: warm_up (2 turns) → deep_dive (5 turns) → finished
-    Total: 7 questions max for a ~15 minute interview.
+    warm_up (2 turns) → deep_dive (6 turns) → stress_test (4 turns) → finished. Total: 12 turns max.
 
     Returns the same phase if threshold not yet reached.
     """
@@ -52,6 +51,8 @@ def resolve_next_phase(current_status: str, turn_count: int) -> str:
         case "warm_up" if turn_count >= PHASE_THRESHOLDS["warm_up"]:
             return "deep_dive"
         case "deep_dive" if turn_count >= PHASE_THRESHOLDS["deep_dive"]:
+            return "stress_test"
+        case "stress_test" if turn_count >= PHASE_THRESHOLDS["stress_test"]:
             return "finished"
         case _:
             return current_status

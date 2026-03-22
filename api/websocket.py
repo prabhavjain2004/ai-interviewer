@@ -221,8 +221,7 @@ async def interview_websocket(
                 pass
     finally:
         if ended_cleanly[0]:
-            # Clean intentional end — close Flash Live, final state persist
-            # Coach is triggered by DELETE /session (called by frontend btn-end)
+            # Clean intentional end — close Flash Live, final state persist, trigger coach
             await session.close()
             try:
                 state = await session.sync_to_state(state)
@@ -230,6 +229,13 @@ async def interview_websocket(
                 await redis.save_state(session_id, dict(state))
                 logger.info("Session ended cleanly | session=%s | turns=%d",
                             session_id, state.get("turn_count", 0))
+                
+                # Trigger coach report AFTER transcript is confirmed in Redis
+                asyncio.create_task(
+                    _run_coach_safe(state, api_key, redis),
+                    name=f"coach-{session_id}",
+                )
+                logger.info("Coach report triggered after transcript persist | session=%s", session_id)
             except Exception as exc:
                 logger.warning("Final state sync failed | session=%s | error=%s", session_id, exc)
             remove_session(session_id)
@@ -250,7 +256,7 @@ async def interview_websocket(
 
             # Schedule session cleanup after reconnect window expires
             asyncio.create_task(
-                _cleanup_after_window(session_id, RECONNECT_WINDOW_SECONDS, api_key, redis),
+                _cleanup_after_window(session_id, RECONNECT_WINDOW_SECONDS, api_key, redis, app.state.chroma),
                 name=f"cleanup-{session_id}",
             )
 
@@ -260,7 +266,7 @@ async def interview_websocket(
             pass
 
 
-async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis: RedisClient) -> None:
+async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis: RedisClient, chroma) -> None:
     """
     Waits for the reconnect window to expire.
     If the student did NOT reconnect, triggers the Coach report and cleans up.
@@ -274,6 +280,7 @@ async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis
         if session:
             await session.close()
             remove_session(session_id)
+        await chroma.delete_session_collection(session_id)
 
         # Trigger coach report — session ended without END_INTERVIEW
         state = await redis.load_state(session_id)
