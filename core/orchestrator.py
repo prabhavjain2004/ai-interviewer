@@ -206,7 +206,6 @@ class InterviewSession:
         session_id: str,
         resume_json: dict,
         api_key: str,
-        chroma_client: "ChromaClient | None" = None,
     ) -> None:
         self.session_id = session_id
         self.api_key = api_key
@@ -234,7 +233,6 @@ class InterviewSession:
             initial_phase="warm_up",
             on_auditor_trigger=auditor_callback,
             on_transcript_event=transcript_callback,
-            chroma_client=chroma_client,
         )
 
     async def start(self) -> None:

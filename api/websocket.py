@@ -264,7 +264,7 @@ async def interview_websocket(
 
             # Schedule session cleanup after reconnect window expires
             asyncio.create_task(
-                _cleanup_after_window(session_id, RECONNECT_WINDOW_SECONDS, api_key, redis, app.state.chroma),
+                _cleanup_after_window(session_id, RECONNECT_WINDOW_SECONDS, api_key, redis),
                 name=f"cleanup-{session_id}",
             )
 
@@ -274,7 +274,7 @@ async def interview_websocket(
             pass
 
 
-async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis: RedisClient, chroma) -> None:
+async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis: RedisClient) -> None:
     """
     Waits for the reconnect window to expire.
     If the student did NOT reconnect, triggers the Coach report and cleans up.
@@ -288,7 +288,6 @@ async def _cleanup_after_window(session_id: str, delay: int, api_key: str, redis
         if session:
             await session.close()
             remove_session(session_id)
-        await chroma.delete_session_collection(session_id)
 
         # Trigger coach report — session ended without END_INTERVIEW
         state = await redis.load_state(session_id)

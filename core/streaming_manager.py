@@ -206,7 +206,6 @@ class LiveInterviewer:
         initial_phase: str = "warm_up",
         on_auditor_trigger: Callable[[str, int], None] | None = None,
         on_transcript_event: Callable[[str, str], None] | None = None,
-        chroma_client: "ChromaClient | None" = None,
     ) -> None:
         self.session_id = session_id
         self.resume_json = resume_json
@@ -219,9 +218,6 @@ class LiveInterviewer:
 
         # Callback fired when any transcript event arrives (interviewer or student)
         self._on_transcript_event = on_transcript_event
-
-        # ChromaDB client for mid-session RAG (deep_dive + stress_test phases only)
-        self._chroma = chroma_client
 
         self._client: genai.Client | None = None
         self._live_session = None
@@ -379,11 +375,6 @@ class LiveInterviewer:
                                     self._inject_student_text(student_text),
                                     name=f"inject-text-{self.session_id}-turn-{self.turn_count}",
                                 )
-                                if self.phase in ("deep_dive", "stress_test") and self._chroma:
-                                    asyncio.create_task(
-                                        self._inject_rag_context(student_text),
-                                        name=f"rag-{self.session_id}-turn-{self.turn_count}",
-                                    )
 
                         if content.turn_complete and self._student_spoke_since_last_turn:
                             now = time.monotonic()

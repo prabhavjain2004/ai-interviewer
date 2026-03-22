@@ -24,10 +24,9 @@ from core.orchestrator import (
     get_session,
 )
 from core.parser import parse_resume
-from services.chroma_client import ChromaClient
 from services.redis_client import RedisClient
 
-from api.deps import get_redis, get_chroma, get_api_key
+from api.deps import get_redis, get_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/session", tags=["session"])
@@ -62,15 +61,13 @@ class SessionStatusResponse(BaseModel):
 async def start_session(
     body: StartSessionRequest,
     redis: RedisClient = Depends(get_redis),
-    chroma: ChromaClient = Depends(get_chroma),
     api_key: str = Depends(get_api_key),
 ) -> StartSessionResponse:
     """
     1. Parse resume → ResumeProfile (Gemini Pro, file deleted after parse).
-    2. Embed resume chunks into ChromaDB.
-    3. Initialise InterviewState and persist to Redis.
-    4. Create InterviewSession (holds LiveInterviewer handle).
-    5. Return session_id — client uses this for the WebSocket connection.
+    2. Initialise InterviewState and persist to Redis.
+    3. Create InterviewSession (holds LiveInterviewer handle).
+    4. Return session_id — client uses this for the WebSocket connection.
     """
     file_path = Path(body.resume_file_path)
     if not file_path.exists():
@@ -83,9 +80,6 @@ async def start_session(
         profile = await parse_resume(file_path, api_key, delete_after_parse=True)
         resume_json = profile.model_dump(mode="json")
 
-        # Embed resume into ChromaDB for RAG
-        await chroma.embed_resume(session_id, profile.raw_text)
-
         # Initialise state and persist to Redis
         state = create_initial_state(session_id, resume_json)
         await redis.save_state(session_id, dict(state))
@@ -95,7 +89,6 @@ async def start_session(
             session_id=session_id,
             resume_json=resume_json,
             api_key=api_key,
-            chroma_client=chroma,
         )
         register_session(session)
 
@@ -120,7 +113,6 @@ async def end_session(
     session_id: str,
     background_tasks: BackgroundTasks,
     redis: RedisClient = Depends(get_redis),
-    chroma: ChromaClient = Depends(get_chroma),
     api_key: str = Depends(get_api_key),
 ) -> dict:
     """
@@ -146,7 +138,6 @@ async def end_session(
     if session:
         await session.close()
         remove_session(session_id)
-    await chroma.delete_session_collection(session_id)
 
     logger.info("Session ended | session=%s | coach report queued", session_id)
     return {"session_id": session_id, "status": "finished", "message": "Coach report generating."}

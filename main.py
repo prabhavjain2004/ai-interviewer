@@ -32,7 +32,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.orchestrator import initialize_graph
 from services.redis_client import RedisClient
-from services.chroma_client import ChromaClient
 from api.routes import session, resume, report
 from api.websocket import router as ws_router
 
@@ -49,13 +48,13 @@ logger = logging.getLogger(__name__)
 
 class Settings(BaseSettings):
     gemini_api_key: str
-    redis_url: str = "redis://localhost:6379"
-    chroma_host: str = "localhost"
-    chroma_port: int = 8000
+    upstash_redis_rest_url: str
+    upstash_redis_rest_token: str
     session_ttl_seconds: int = 86400
     max_turns_warm_up: int = 2      # 2 questions for intro
     max_turns_deep_dive: int = 7    # Cumulative 7 questions (5 deep_dive turns)
     max_turns_stress_test: int = 10 # Cumulative 10 questions (3 stress_test turns)
+    allowed_origins: str = "*"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -71,16 +70,18 @@ settings = Settings()
 async def lifespan(app: FastAPI):
     # --- Startup ---
     logger.info("Starting AI Interviewer & Mentor platform...")
+    
+    Path("data/resumes").mkdir(parents=True, exist_ok=True)
+    Path("static").mkdir(exist_ok=True)
 
-    # Redis
-    redis = RedisClient(url=settings.redis_url, ttl=settings.session_ttl_seconds)
+    # Upstash Redis
+    redis = RedisClient(
+        url=settings.upstash_redis_rest_url,
+        token=settings.upstash_redis_rest_token,
+        ttl=settings.session_ttl_seconds
+    )
     await redis.connect()
     app.state.redis = redis
-
-    # ChromaDB
-    chroma = ChromaClient(host=settings.chroma_host, port=settings.chroma_port)
-    chroma.connect()
-    app.state.chroma = chroma
 
     # Gemini API key — stored on app state, injected via deps.py
     app.state.gemini_api_key = settings.gemini_api_key
@@ -93,7 +94,6 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     await redis.disconnect()
-    chroma.disconnect()
     logger.info("Platform shutdown complete.")
 
 
@@ -110,7 +110,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Tighten in production
+    allow_origins=[o.strip() for o in settings.allowed_origins.split(",")],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

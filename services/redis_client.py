@@ -5,7 +5,7 @@ Redis connection + session state persistence.
 
 All session state lives here — workers are fully stateless (architecture.md §6).
 24-hour TTL on all keys — auto-expires, no manual cleanup (architecture.md §7).
-Async throughout using redis.asyncio (rules.md §7).
+Async throughout using Upstash Redis REST API (rules.md §7).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Any
 
-import redis.asyncio as aioredis
+from upstash_redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -23,33 +23,29 @@ DEFAULT_TTL = 86400  # 24 hours in seconds
 
 class RedisClient:
     """
-    Thin async wrapper around redis.asyncio.
+    Thin async wrapper around Upstash Redis REST API.
     One instance shared across the app (created in main.py lifespan).
     """
 
-    def __init__(self, url: str, ttl: int = DEFAULT_TTL) -> None:
+    def __init__(self, url: str, token: str, ttl: int = DEFAULT_TTL) -> None:
         self._url = url
+        self._token = token
         self._ttl = ttl
-        self._redis: aioredis.Redis | None = None
+        self._redis: Redis | None = None
 
     async def connect(self) -> None:
         try:
-            self._redis = await aioredis.from_url(
-                self._url,
-                encoding="utf-8",
-                decode_responses=True,
-            )
+            self._redis = Redis(url=self._url, token=self._token)
             await self._redis.ping()
-            logger.info("Redis connected | url=%s", self._url)
-        except Exception:
-            logger.warning("Redis unavailable — falling back to fakeredis (dev mode)")
-            import fakeredis.aioredis as fakeredis
-            self._redis = fakeredis.FakeRedis(decode_responses=True)
+            logger.info("Upstash Redis connected | url=%s", self._url)
+        except Exception as e:
+            logger.error("Failed to connect to Upstash Redis: %s", e)
+            raise
 
     async def disconnect(self) -> None:
         if self._redis:
-            await self._redis.aclose()
-            logger.info("Redis disconnected.")
+            # Upstash Redis client doesn't require explicit disconnect
+            logger.info("Upstash Redis disconnected.")
 
     # ------------------------------------------------------------------
     # Core operations
@@ -58,10 +54,10 @@ class RedisClient:
     async def set_json(self, key: str, value: dict[str, Any], ttl: int | None = None) -> None:
         """Serialise dict to JSON and store with TTL."""
         assert self._redis, "Redis not connected."
-        await self._redis.setex(
+        await self._redis.set(
             key,
-            ttl or self._ttl,
             json.dumps(value, default=str),
+            ex=ttl or self._ttl,
         )
 
     async def get_json(self, key: str) -> dict[str, Any] | None:
