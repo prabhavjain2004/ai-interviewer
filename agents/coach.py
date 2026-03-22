@@ -201,10 +201,30 @@ async def generate_coach_report(
         CoachReport — validated Pydantic model.
 
     Raises:
-        ValueError: If Pro returns unparseable or incomplete output.
+        ValueError: If Pro returns unparseable or incomplete output, or if transcript is empty.
     """
     session_id = state.get("session_id", "unknown")
-    logger.info("Coach report generation started | session=%s", session_id)
+    transcript = state.get("transcript", [])
+    
+    # Validate transcript exists and has meaningful content
+    if not transcript or len(transcript) < 2:
+        raise ValueError(
+            f"Cannot generate report: transcript has only {len(transcript)} turns. "
+            f"Minimum 2 turns required (1 interviewer + 1 student). "
+            f"This usually means the interview ended before any conversation occurred."
+        )
+    
+    student_turns = [t for t in transcript if t.get("speaker") == "student"]
+    if not student_turns:
+        raise ValueError(
+            f"Cannot generate report: no student responses in transcript. "
+            f"Total turns: {len(transcript)}, but all are from interviewer."
+        )
+    
+    logger.info(
+        "Coach report generation started | session=%s | transcript_turns=%d | student_turns=%d",
+        session_id, len(transcript), len(student_turns)
+    )
 
     client = genai.Client(api_key=api_key)
     prompt = _build_coach_prompt(state)
@@ -284,9 +304,31 @@ async def run_coach_background(
         if existing:
             logger.info("Coach report already exists — skipping duplicate | session=%s", session_id)
             return
+        
+        # Debug: Log transcript state before generating report
+        transcript = state.get("transcript", [])
+        logger.info(
+            "Coach background task starting | session=%s | transcript_turns=%d",
+            session_id, len(transcript)
+        )
+        if not transcript:
+            logger.error(
+                "CRITICAL: Empty transcript in coach background task | session=%s | "
+                "This means transcript was not persisted to Redis before coach ran. "
+                "Check websocket.py finally block and redis.save_state() call.",
+                session_id
+            )
+            return  # Don't generate report with empty transcript
+        
         report = await generate_coach_report(state, api_key)
         await redis_client.save_report(session_id, report.model_dump(mode="json"))
         logger.info("Coach report saved to Redis | key=%s", redis_client.report_key(session_id))
+    except ValueError as exc:
+        # Validation errors (empty transcript, etc.) - log as warning, not error
+        logger.warning(
+            "Coach report validation failed | session=%s | reason=%s",
+            session_id, str(exc),
+        )
     except Exception as exc:
         logger.error(
             "Coach background task failed | session=%s | error=%s",

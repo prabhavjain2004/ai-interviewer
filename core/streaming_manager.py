@@ -374,6 +374,11 @@ class LiveInterviewer:
                                 if self._on_transcript_event:
                                     self._on_transcript_event("student", student_text)
                                 self._fire_auditor(student_text, self.turn_count)
+                                # CRITICAL: Inject student text back into session so Gemini can READ it
+                                asyncio.create_task(
+                                    self._inject_student_text(student_text),
+                                    name=f"inject-text-{self.session_id}-turn-{self.turn_count}",
+                                )
                                 if self.phase in ("deep_dive", "stress_test") and self._chroma:
                                     asyncio.create_task(
                                         self._inject_rag_context(student_text),
@@ -444,25 +449,43 @@ class LiveInterviewer:
         """
         Re-injects system_instruction when the interview phase changes.
         Sends a silent context update via send_client_content.
+        If transitioning to "finished", tells the student to click End Interview button.
         """
         if not self._is_connected or self._live_session is None:
             return
         self.phase = new_phase
         self._last_system_instruction_turn = self.turn_count
-        new_instruction = build_system_instruction(self.resume_json, new_phase, self.turn_count)
-        # Inject phase change as a system context note
-        await self._live_session.send_client_content(
-            turns=genai_types.Content(
-                role="user",
-                parts=[genai_types.Part(text=(
-                    f"[SYSTEM: Interview phase is now {new_phase.upper()}. "
-                    f"Adjust your questioning style accordingly.]"
-                ))],
-            ),
-            turn_complete=False,
-        )
-        logger.info("Phase updated | session_id=%s | new_phase=%s",
-                    self.session_id, new_phase)
+        
+        if new_phase == "finished":
+            # Interview complete - tell student to click the button
+            await self._live_session.send_client_content(
+                turns=genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=(
+                        "[SYSTEM: Interview complete. Tell the student: "
+                        "'That concludes our interview! You did great. "
+                        "Please click the End Interview button to generate your coaching report.']"
+                    ))],
+                ),
+                turn_complete=True,  # Force immediate response
+            )
+            logger.info("Interview finished - ending message sent | session_id=%s",
+                        self.session_id)
+        else:
+            # Normal phase transition
+            new_instruction = build_system_instruction(self.resume_json, new_phase, self.turn_count)
+            await self._live_session.send_client_content(
+                turns=genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=(
+                        f"[SYSTEM: Interview phase is now {new_phase.upper()}. "
+                        f"Adjust your questioning style accordingly.]"
+                    ))],
+                ),
+                turn_complete=False,
+            )
+            logger.info("Phase updated | session_id=%s | new_phase=%s",
+                        self.session_id, new_phase)
 
     async def _update_difficulty_level(self) -> None:
         """
@@ -554,6 +577,37 @@ class LiveInterviewer:
             # Never propagate — RAG failure must not affect the interview
             logger.warning("RAG injection failed | session=%s | error=%s",
                            self.session_id, exc)
+
+    async def _inject_student_text(self, text: str) -> None:
+        """
+        Sends the student's transcribed text back into the Live session
+        as a readable user message. Without this, Gemini only hears the
+        audio — it never "reads" the words before generating its reply,
+        causing irrelevant responses.
+        
+        CRITICAL FIX: This is why "Elon Musk is great" got "that's a great 
+        approach to multi-agent systems" — Gemini was responding based on 
+        resume context and its last question, not what you actually said.
+        """
+        if not self._is_connected or not self._live_session:
+            return
+        try:
+            await self._live_session.send_client_content(
+                turns=genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=text)],
+                ),
+                turn_complete=False,
+            )
+            logger.debug(
+                "Student text injected into context | session=%s | chars=%d",
+                self.session_id, len(text),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Student text inject failed | session=%s | error=%s",
+                self.session_id, exc,
+            )
 
     # ------------------------------------------------------------------
     # State export (called by orchestrator before Redis persist)

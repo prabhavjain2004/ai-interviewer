@@ -227,15 +227,23 @@ async def interview_websocket(
                 state = await session.sync_to_state(state)
                 state["status"] = "finished"
                 await redis.save_state(session_id, dict(state))
-                logger.info("Session ended cleanly | session=%s | turns=%d",
-                            session_id, state.get("turn_count", 0))
+                logger.info("Session ended cleanly | session=%s | turns=%d | transcript_turns=%d",
+                            session_id, state.get("turn_count", 0), len(state.get("transcript", [])))
                 
-                # Trigger coach report AFTER transcript is confirmed in Redis
-                asyncio.create_task(
-                    _run_coach_safe(state, api_key, redis),
-                    name=f"coach-{session_id}",
-                )
-                logger.info("Coach report triggered after transcript persist | session=%s", session_id)
+                # CRITICAL: Reload state from Redis to ensure we have the persisted transcript
+                # The in-memory state might be stale due to async timing
+                fresh_state = await redis.load_state(session_id)
+                if fresh_state:
+                    logger.info("Reloaded fresh state from Redis | transcript_turns=%d",
+                                len(fresh_state.get("transcript", [])))
+                    # Trigger coach report with fresh state
+                    asyncio.create_task(
+                        _run_coach_safe(fresh_state, api_key, redis),
+                        name=f"coach-{session_id}",
+                    )
+                    logger.info("Coach report triggered with fresh state | session=%s", session_id)
+                else:
+                    logger.error("Failed to reload state from Redis | session=%s", session_id)
             except Exception as exc:
                 logger.warning("Final state sync failed | session=%s | error=%s", session_id, exc)
             remove_session(session_id)

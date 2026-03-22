@@ -734,6 +734,8 @@ async function startMic() {
       }
       // Don't stream more mic frames while waiting for a manual TURN_COMPLETE cycle.
       if (USE_MANUAL_TURN_COMPLETE && waitingForAi) return;
+      // CRITICAL: Don't send mic audio while AI is speaking (prevents echo/interruption)
+      if (aiSpeaking) return;
       ws.send(int16.buffer);
     };
 
@@ -789,9 +791,9 @@ function onAiChunkReceived() {
   // Reset the silence debounce on every chunk
   clearTimeout(aiSpeakingTimer);
   aiSpeakingTimer = setTimeout(() => {
-    // No new chunk for 600ms — AI has finished speaking, resume listening
+    // No new chunk for 1500ms — AI has finished speaking, resume listening
     aiSpeaking = false;
-  }, 600);
+  }, 1500);
 }
 
 function scheduleChunk(arrayBuffer) {
