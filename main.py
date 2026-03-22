@@ -32,7 +32,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.orchestrator import initialize_graph
 from services.redis_client import RedisClient
-from api.routes import session, resume, report
+from api.routes import session, resume, report, debug
 from api.websocket import router as ws_router
 
 logging.basicConfig(
@@ -120,6 +120,7 @@ app.add_middleware(
 app.include_router(resume.router)
 app.include_router(session.router)
 app.include_router(report.router)
+app.include_router(debug.router)
 app.include_router(ws_router)
 
 # Serve static files

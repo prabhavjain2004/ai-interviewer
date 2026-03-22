@@ -353,9 +353,24 @@
       <span style="font-size:0.8rem;color:var(--muted);" id="turn-counter">Turn 0</span>
     </div>
 
-    <!-- Audio visualiser -->
-    <div class="visualiser-wrap" id="visualiser">
-      <!-- bars injected by JS -->
+    <!-- Video Grid (Google Meet style) -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0;">
+      <!-- AI Interviewer Card -->
+      <div style="background:var(--bg);border-radius:8px;padding:16px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:180px;border:1px solid var(--border);">
+        <div style="font-size:3rem;margin-bottom:8px;">🤖</div>
+        <div style="font-size:0.875rem;font-weight:600;color:var(--text);">AI Interviewer</div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-top:4px;">Gemini Live</div>
+        <!-- Audio visualiser -->
+        <div class="visualiser-wrap" id="visualiser" style="margin-top:12px;">
+          <!-- bars injected by JS -->
+        </div>
+      </div>
+      
+      <!-- Your Camera Card -->
+      <div style="background:var(--bg);border-radius:8px;overflow:hidden;position:relative;min-height:180px;border:1px solid var(--border);">
+        <video id="user-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+        <div style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,0.7);padding:4px 10px;border-radius:6px;font-size:0.75rem;color:var(--text);">You</div>
+      </div>
     </div>
 
     <div class="controls">
@@ -367,7 +382,7 @@
       </button>
     </div>
     <div style="margin-top:12px;font-size:0.75rem;color:var(--muted);text-align:center;" id="listening-hint">
-      Mic is always listening — just speak naturally
+      Camera and mic are active — just speak naturally
     </div>
   </div>
 
@@ -417,6 +432,7 @@ let micActive = false;
 let analyser = null;
 let animFrame = null;
 const BARS = 28;
+let studentTurnCount = 0;  // Track student responses
 
 // Silent VAD config/state
 const USE_MANUAL_TURN_COMPLETE = true; // Frontend silence detection explicitly ends turns
@@ -568,7 +584,8 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     setStatus('warm_up', 0);
-    document.getElementById('btn-end').disabled = false;
+    // Keep "End Interview" button disabled until student speaks
+    document.getElementById('btn-end').disabled = true;
     // Auto-start mic — continuous listening, natural conversation
     startMic();
     toast('Connected — AI will greet you…');
@@ -627,8 +644,15 @@ async function startMic() {
         autoGainControl: true,
         sampleRate: 16000,
       },
-      video: false,
+      video: true,  // Request video for camera display
     });
+    
+    // Display video feed (not recorded, just displayed)
+    const videoElement = document.getElementById('user-video');
+    if (videoElement) {
+      videoElement.srcObject = mediaStream;
+    }
+    
     audioContext = new AudioContext({ sampleRate: 16000 });
     const source = audioContext.createMediaStreamSource(mediaStream);
 
@@ -740,9 +764,9 @@ async function startMic() {
     };
 
     micActive = true;
-    toast('Mic active — auto end-of-answer detection enabled');
+    toast('Camera and mic active — auto end-of-answer detection enabled');
   } catch (err) {
-    toast('Mic error: ' + err.message);
+    toast('Camera/Mic permission denied: ' + err.message);
   }
 }
 
@@ -750,7 +774,13 @@ function stopMic() {
   if (processor)    { processor.disconnect(); processor = null; }
   if (analyser)     { analyser.disconnect(); analyser = null; }
   if (audioContext) { audioContext.close(); audioContext = null; }
-  if (mediaStream)  { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (mediaStream)  { 
+    mediaStream.getTracks().forEach(t => t.stop()); 
+    // Clear video element
+    const videoElement = document.getElementById('user-video');
+    if (videoElement) videoElement.srcObject = null;
+    mediaStream = null; 
+  }
   if (animFrame)    { cancelAnimationFrame(animFrame); animFrame = null; }
   clearTimeout(aiSpeakingTimer);
   hasSpokenThisTurn = false;
@@ -852,6 +882,15 @@ function appendTranscript(speaker, text) {
   `;
   container.appendChild(turn);
   container.scrollTop = container.scrollHeight;
+  
+  // Enable "End Interview" button after first student response
+  if (speaker === 'student') {
+    studentTurnCount++;
+    if (studentTurnCount >= 1) {
+      const btnEnd = document.getElementById('btn-end');
+      if (btnEnd) btnEnd.disabled = false;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

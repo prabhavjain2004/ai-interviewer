@@ -311,6 +311,7 @@ async def run_coach_background(
             "Coach background task starting | session=%s | transcript_turns=%d",
             session_id, len(transcript)
         )
+        
         if not transcript:
             logger.error(
                 "CRITICAL: Empty transcript in coach background task | session=%s | "
@@ -320,9 +321,21 @@ async def run_coach_background(
             )
             return  # Don't generate report with empty transcript
         
+        # Log first few transcript entries for debugging
+        logger.info(
+            "Transcript preview | session=%s | first_3_turns=%s",
+            session_id,
+            json.dumps(transcript[:3], indent=2) if len(transcript) >= 3 else json.dumps(transcript, indent=2)
+        )
+        
+        logger.info("Calling generate_coach_report | session=%s", session_id)
         report = await generate_coach_report(state, api_key)
+        logger.info("Coach report generated successfully | session=%s | score=%.1f", 
+                    session_id, report.overall_score)
+        
         await redis_client.save_report(session_id, report.model_dump(mode="json"))
         logger.info("Coach report saved to Redis | key=%s", redis_client.report_key(session_id))
+        
     except ValueError as exc:
         # Validation errors (empty transcript, etc.) - log as warning, not error
         logger.warning(
@@ -331,6 +344,7 @@ async def run_coach_background(
         )
     except Exception as exc:
         logger.error(
-            "Coach background task failed | session=%s | error=%s",
-            session_id, exc,
+            "Coach background task failed | session=%s | error=%s | traceback=%s",
+            session_id, exc, exc.__traceback__,
+            exc_info=True,  # This will log full traceback
         )

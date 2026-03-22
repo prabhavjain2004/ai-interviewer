@@ -116,6 +116,15 @@ def build_system_instruction(resume_json: dict, phase: str, turn_count: int = 0)
             "Examples: 'Interesting approach — what if [edge case]?', 'I see your reasoning — have you considered [alternative]?' "
             "Be supportive but push them to think critically about robustness and scale."
         ),
+        "finished": (
+            "The interview is COMPLETE. Wrap up gracefully. "
+            "Say something like: 'That wraps up our technical discussion — you did great! "
+            "Best of luck with your job search, and feel free to reach out if you have any questions.' "
+            "DO NOT ask if they have questions for you. DO NOT continue the conversation. "
+            "DO NOT answer unrelated questions. Simply thank them and end warmly. "
+            "If they try to ask you something, politely redirect: 'I appreciate the question, but we've wrapped up the interview portion. "
+            "Your detailed feedback report will be ready shortly. Good luck!'"
+        ),
     }
 
     return f"""You are an elite technical interviewer and supportive mentor for university students.
