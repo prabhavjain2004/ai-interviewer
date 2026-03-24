@@ -271,7 +271,6 @@ We welcome contributions! Here's how you can help:
 - **Resume parsing:** 3-5 seconds (one-time)
 - **Coaching report:** 10-15 seconds (post-interview)
 - **Concurrent sessions:** Unlimited (stateless workers)
-- **Cost per interview:** ~$0.01 (Gemini API usage)
 
 ---
 
@@ -327,9 +326,8 @@ SOFTWARE.
 
 ## 📞 Support
 
-- **Issues:** [GitHub Issues](https://github.com/yourusername/ai-interviewer-mentor/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/yourusername/ai-interviewer-mentor/discussions)
-- **Email:** your.email@example.com
+- **Issues:** [GitHub Issues](https://github.com/prabhavjain2004/ai-interviewer-mentor/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/prabhavjain2004/ai-interviewer-mentor/discussions)
 
 ---
 
@@ -359,7 +357,7 @@ SOFTWARE.
 
 If you find this project useful, please consider giving it a star! It helps others discover the project.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yourusername/ai-interviewer-mentor&type=Date)](https://star-history.com/#yourusername/ai-interviewer-mentor&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=prabhavjain2004/ai-interviewer-mentor&type=Date)](https://star-history.com/#prabhavjain2004/ai-interviewer-mentor&Date)
 
 ---
 
